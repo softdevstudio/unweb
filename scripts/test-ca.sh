@@ -52,6 +52,14 @@ case "$(uname -s)" in
     sudo security authorizationdb write com.apple.trust-settings.admin allow >/dev/null 2>&1 || true
     sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem
     grep -q " $host\$" /etc/hosts || echo "127.0.0.1 $host" | sudo tee -a /etc/hosts >/dev/null
+    # Say so plainly if macOS doesn't trust the certificate now.
+    if ! security verify-cert -c leaf.pem -r ca.pem -p ssl -s "$host" >/dev/null 2>&1 \
+       || ! security verify-cert -c leaf.pem -p ssl -s "$host" >/dev/null 2>&1; then
+      echo "macOS does not trust the test certificate:" >&2
+      security verify-cert -c leaf.pem -p ssl -s "$host" >&2 || true
+      exit 1
+    fi
+    dscacheutil -flushcache 2>/dev/null || true
     ;;
   MINGW*|MSYS*|CYGWIN*)
     certutil -addstore -f Root ca.pem >/dev/null

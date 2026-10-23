@@ -121,7 +121,8 @@ jobs:
       # runner is thrown away afterwards (see scripts/test-ca.sh).
       - name: Test certificate for the HSTS check
         run: |
-          bash scripts/test-ca.sh "$RUNNER_TEMP/unweb-tls"
+          bash scripts/test-ca.sh "$RUNNER_TEMP/unweb-tls" 2> "$RUNNER_TEMP/ca.err" || {
+            echo "::error title=test certificate::$(tr '\n' ' ' < "$RUNNER_TEMP/ca.err")"; exit 1; }
           echo "UNWEB_TEST_TLS=$RUNNER_TEMP/unweb-tls" >> "$GITHUB_ENV"
       # The self-test runs on what people install, not just the raw build:
       # the installed .deb, the AppImage, the app copied from the .dmg and

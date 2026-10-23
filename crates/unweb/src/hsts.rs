@@ -32,6 +32,9 @@ pub enum Seen {
     Plain(String),
     /// A TLS handshake on the plain server: the engine upgraded the visit.
     Upgraded,
+    /// A connection to the HTTPS server that ended before a request, with
+    /// the reason (the engine refusing the certificate, say).
+    HttpsFailed(String),
 }
 
 #[derive(Clone)]
@@ -130,7 +133,20 @@ fn serve_https(
     let mut tls = rustls::StreamOwned::new(conn, stream);
     let target = {
         let mut reader = BufReader::new(&mut tls);
-        request_target(&mut reader)?
+        request_target(&mut reader)
+    };
+    let target = match target {
+        Ok(t) if !t.is_empty() => t,
+        other => {
+            let why = match other {
+                Err(e) => e.to_string(),
+                Ok(_) => "closed before a request".into(),
+            };
+            if let Ok(mut s) = seen.lock() {
+                s.push(Seen::HttpsFailed(why));
+            }
+            return Ok(());
+        }
     };
     if let Ok(mut s) = seen.lock() {
         s.push(Seen::Https(target));
