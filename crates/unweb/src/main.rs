@@ -45,7 +45,23 @@ fn start_url_from_args() -> Option<Url> {
         .find_map(|(_, a)| normalize_url(a))
 }
 
+/// Mesa (and NVIDIA's Linux driver) keep compiled GPU shaders in a disk
+/// cache in the user's home folder, shared by every program. A page could
+/// fill it in one stranger and find its entries again, by timing, in the
+/// next. Turned off before any engine process starts, so they inherit it.
+fn no_shared_shader_cache() {
+    #[cfg(target_os = "linux")]
+    for (k, v) in [
+        ("MESA_SHADER_CACHE_DISABLE", "true"),
+        ("MESA_GLSL_CACHE_DISABLE", "true"),
+        ("__GL_SHADER_DISK_CACHE", "0"),
+    ] {
+        std::env::set_var(k, v);
+    }
+}
+
 fn main() {
+    no_shared_shader_cache();
     let selftest_dir = selftest::requested_dir();
     let selftest_running = selftest_dir.is_some();
     let holder: Arc<std::sync::OnceLock<Arc<Strangers>>> = Arc::new(std::sync::OnceLock::new());

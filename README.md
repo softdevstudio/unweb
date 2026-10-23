@@ -14,13 +14,19 @@ Early. This is the foundation: each window gets a throwaway store of its own, an
 
 On Windows and Linux each stranger gets a data folder of its own, which the engine uses for cookies, storage, its cache, service workers and everything else a site can leave. No two strangers share a folder. On macOS each stranger gets its own WKWebView data store that keeps nothing on disk.
 
-When a stranger closes, Unweb deletes its folder and checks that it stays deleted. On Linux it first tells the engine to clear the stranger's data, then waits until the engine has stopped writing to the folder (WebKitGTK writes a few cache records a few seconds after a page closes), deletes it, and watches it for ten seconds in case anything writes to it again. When the last stranger closes, Unweb waits for these deletions before it quits. A folder left behind by a crash is deleted the next time Unweb starts.
+When a stranger closes, Unweb deletes its folder and checks that it stays deleted. On Linux it first tells the engine to clear the stranger's data, then waits until the engine has stopped writing to the folder (WebKitGTK writes a few cache records a few seconds after a page closes), deletes it, and watches it for ten seconds in case anything writes to it again. When the last stranger closes, Unweb waits for these deletions before it quits.
+
+Each running copy of Unweb keeps its strangers in a run folder of its own and holds a lock on it. If Unweb crashes or is killed, its lock is let go, and the next copy that starts deletes that run folder. A second copy started while the first is running leaves the first one's strangers alone.
+
+Unweb also turns off what the engine would otherwise keep outside the stranger's folder: WebView2's GPU shader disk cache on Windows, Mesa's and NVIDIA's shared shader caches on Linux (a page could otherwise compile a shader in one stranger and find it again, by timing, in the next), and on Linux the offer to save sign-in passwords in the system keyring.
 
 ## What a stranger still gives away
 
 - **Your IP address and rough location.** A site still sees where the connection comes from.
 - **Your device.** All strangers on one machine share its screen size, fonts and hardware, so a site that fingerprints devices could link them.
 - **It's not a sandbox for dangerous sites.** Your normal browser's data stays untouched, but a stranger runs on the same system engine as everything else.
+- **Your graphics driver's own caches on Windows and macOS.** The driver can keep compiled shaders in a cache of its own (DirectX's shader cache, Apple's Metal cache), shared by every program. Unweb can't turn those off, so in theory a page could recognize, by timing, that a shader was compiled on this machine before.
+- **A stranger closed by force.** A page that closes its own window, or killing Unweb, skips the careful wipe. Whatever is left is deleted the next time Unweb starts.
 
 ## Self-test
 
@@ -36,6 +42,9 @@ This runs the real app against two small local servers: a site at `127.0.0.1` an
 4. A closes. Its data folder must be deleted and stay deleted.
 5. Stranger C, opened after A closed, must find nothing.
 6. Every stranger closes. No folder may be left, and no file may appear anywhere else in Unweb's own folders.
+7. On Linux, the GPU shader caches every program shares must not have changed, even though A compiled a WebGL shader no one had compiled before. With Unweb's setting removed, this check fails.
+
+A check only counts something as carried over where A's own control could see it. Every engine tested so far keeps a cookie set by a frame from another site away from that frame on the next page, even in A, so that cookie is reported as not judged.
 
 Results are written to `results-dir/selftest.json`; the exit code is 0 only if every check passed. CI runs it on Windows, macOS and Linux on every push. Results recorded on the development machine (Linux) are in [test/results/latest](test/results/latest).
 

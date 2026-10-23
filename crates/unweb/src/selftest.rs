@@ -8,16 +8,20 @@
 //!
 //! 1. Stranger A opens /set, which leaves everything a site can leave: a
 //!    server cookie (HttpOnly), a script cookie, localStorage, IndexedDB, a
-//!    Cache API entry, a service worker, a file in the HTTP cache, and a
-//!    cookie and localStorage key from a frame on the other site.
+//!    Cache API entry, a service worker, a file in the HTTP cache, a cookie
+//!    and localStorage key from a frame on the other site, and a WebGL
+//!    shader no one has compiled before.
 //! 2. A opens /check: it must find all of it (the control, so the checks
 //!    that follow can't pass by accident).
 //! 3. Stranger B, open at the same time, opens /check: it must find none of
-//!    it, send none of A's cookies, and fetch the cached file afresh.
+//!    it, send none of A's cookies, and fetch the cached file afresh. The
+//!    frame's traces are judged only where A's control could see them.
 //! 4. A closes: its data folder must be deleted and stay deleted.
 //! 5. Stranger C, opened after A closed, opens /check: nothing.
 //! 6. Every stranger closes: no folder may be left, and no file may appear
 //!    anywhere else in Unweb's data, local data or cache folders.
+//! 7. On Linux, the GPU shader caches every program shares (Mesa's and
+//!    NVIDIA's, in the user's cache folder) must not have changed.
 //!
 //! Results go to `<dir>/selftest.json`; the exit code is 0 only if every
 //! check passed.
@@ -235,6 +239,21 @@ fn set_page(who: &str, other: &str) -> String {
   try {{ var c = await caches.open('unweb_cache'); await c.put('/cache-api-item', new Response('1')); r.cacheapi = 1; }} catch (e) {{ r.cacheapi = 'error'; }}
   try {{ await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; r.sw = 1; }} catch (e) {{ r.sw = 'error'; }}
   r.cachedjs = window.unwebCached ? 1 : 0;
+  // Compile a shader no one has compiled before, so a shared GPU shader
+  // cache would gain an entry.
+  try {{
+    var gl = document.createElement('canvas').getContext('webgl');
+    var src = 'precision mediump float; void main() {{ gl_FragColor = vec4(' + Math.random().toFixed(8) + ', 0.5, 0.25, 1.0); }}';
+    var sh = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    var vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, 'attribute vec4 p; void main() {{ gl_Position = p; }}');
+    gl.compileShader(vs);
+    var pr = gl.createProgram();
+    gl.attachShader(pr, vs); gl.attachShader(pr, sh); gl.linkProgram(pr);
+    r.webgl = gl.getProgramParameter(pr, gl.LINK_STATUS) ? 1 : 0;
+  }} catch (e) {{ r.webgl = 'none'; }}
   var framed = new Promise(function (ok) {{
     window.addEventListener('message', function (m) {{ if (m.data === 'frame-set') ok(1); }});
     setTimeout(function () {{ ok(0); }}, 3000);
@@ -337,9 +356,18 @@ pub fn start(
     *other_base.lock().unwrap() = other_url;
     let first = Url::parse(&format!("{site_url}/set?who=A"))?;
     let handle = app.clone();
+    let shaders_before = shader_cache_snapshot();
     std::thread::spawn(move || {
         let started = Instant::now();
-        let outcome = run(&handle, &strangers, &site, &other, &site_url, started);
+        let outcome = run(
+            &handle,
+            &strangers,
+            &site,
+            &other,
+            &site_url,
+            started,
+            shaders_before,
+        );
         let passed = outcome.passed;
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(
@@ -443,8 +471,23 @@ fn requests_of(server: &Server, who: &str) -> (Vec<Hit>, Vec<Hit>) {
     (mine, cached)
 }
 
+/// The frame's traces that stranger A's control found: only those can show
+/// anything carrying over. (Engines that block third-party cookies never
+/// let the frame's cookie be seen at all, not even by A.)
+fn frame_keys_seen(control: &BTreeMap<String, String>) -> Vec<&'static str> {
+    ["frame_cookie", "frame_ls"]
+        .into_iter()
+        .filter(|k| control.get(*k).map(String::as_str) == Some("1"))
+        .collect()
+}
+
 /// A stranger that must have found nothing.
-fn clean_stranger(name: &'static str, site: &Server, who: &str) -> Check {
+fn clean_stranger(
+    name: &'static str,
+    site: &Server,
+    who: &str,
+    control: &BTreeMap<String, String>,
+) -> Check {
     let report = site.report("check", who);
     let (mine, cached) = requests_of(site, who);
     // Requests that are certainly this stranger's carry its name; another
@@ -480,20 +523,34 @@ fn clean_stranger(name: &'static str, site: &Server, who: &str) -> Check {
                 .collect()
         })
         .unwrap_or_else(|| TRACES.to_vec());
+    let testable = frame_keys_seen(control);
     let frame_found = report
         .as_ref()
         .map(|r| {
-            r.get("frame_cookie").map(String::as_str) == Some("1")
-                || r.get("frame_ls").map(String::as_str) == Some("1")
+            testable
+                .iter()
+                .any(|k| r.get(*k).map(String::as_str) != Some("0"))
         })
         .unwrap_or(true);
+    let untestable: Vec<&str> = ["frame_cookie", "frame_ls"]
+        .into_iter()
+        .filter(|k| !testable.contains(k))
+        .collect();
     check(
         name,
         report.is_some() && found.is_empty() && !frame_found && !carried_cookie && fresh_fetch,
         format!(
-            "page found [{}] (none expected): {}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}; requests meanwhile: {}",
+            "page found [{}] (none expected): {}{}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}; requests meanwhile: {}",
             found.join(" "),
             report.as_ref().map(describe).unwrap_or_else(|| "no report".into()),
+            if untestable.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} not judged: A's own control couldn't see it on this engine)",
+                    untestable.join(", ")
+                )
+            },
             seen.join(" ")
         ),
     )
@@ -516,6 +573,45 @@ fn files_under(dir: &Path, skip: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+type FileMark = (PathBuf, u64, Option<std::time::SystemTime>);
+
+/// Every file in the per-user GPU shader caches (Linux: Mesa's and
+/// NVIDIA's), with its size and time. Empty elsewhere.
+fn shader_cache_snapshot() -> Vec<FileMark> {
+    let mut out = Vec::new();
+    if !cfg!(target_os = "linux") {
+        return out;
+    }
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    let Some(cache) = cache else {
+        return out;
+    };
+    let mut files = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&cache) {
+        for e in rd.flatten() {
+            if e.file_name()
+                .to_string_lossy()
+                .starts_with("mesa_shader_cache")
+            {
+                files_under(&e.path(), Path::new("/nonexistent-skip"), &mut files);
+            }
+        }
+    }
+    files_under(
+        &cache.join("nvidia"),
+        Path::new("/nonexistent-skip"),
+        &mut files,
+    );
+    for f in files {
+        if let Ok(m) = std::fs::metadata(&f) {
+            out.push((f, m.len(), m.modified().ok()));
+        }
+    }
+    out
+}
+
 fn run(
     app: &AppHandle,
     strangers: &Strangers,
@@ -523,6 +619,7 @@ fn run(
     other: &Server,
     site_url: &str,
     started: Instant,
+    shaders_before: Vec<FileMark>,
 ) -> Outcome {
     let deadline = started + OVERALL;
     let mut checks = Vec::new();
@@ -615,7 +712,12 @@ fn run(
         && wait_until(Instant::now() + Duration::from_secs(25), || {
             site.report("check", "B").is_some()
         });
-    let mut c_b = clean_stranger("a stranger open at the same time finds nothing", site, "B");
+    let mut c_b = clean_stranger(
+        "a stranger open at the same time finds nothing",
+        site,
+        "B",
+        &a_report,
+    );
     if !b_ok {
         c_b.pass = false;
     }
@@ -656,7 +758,12 @@ fn run(
         && wait_until(Instant::now() + Duration::from_secs(25), || {
             site.report("check", "C").is_some()
         });
-    let mut c_c = clean_stranger("a new stranger after one closed finds nothing", site, "C");
+    let mut c_c = clean_stranger(
+        "a new stranger after one closed finds nothing",
+        site,
+        "C",
+        &a_report,
+    );
     if !c_ok {
         c_c.pass = false;
     }
@@ -676,9 +783,12 @@ fn run(
     // look again after a while.
     std::thread::sleep(Duration::from_secs(8));
     let wipes = strangers.wipes();
-    let root = strangers.root().to_path_buf();
+    // Everything under the strangers folder must be gone except this run's
+    // own lock, which goes when the app exits.
+    let root = strangers.base().to_path_buf();
     let mut left_in_root = Vec::new();
     files_under(&root, Path::new("/nonexistent-skip"), &mut left_in_root);
+    left_in_root.retain(|p| p != strangers.lock_path());
     let mut elsewhere = Vec::new();
     let paths = app.path();
     for d in [
@@ -712,6 +822,40 @@ fn run(
                 elsewhere.iter().take(10).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
             }
         ),
+    ));
+
+    // 7. The GPU shader cache shared by every program kept nothing.
+    let shaders_after = shader_cache_snapshot();
+    let changed: Vec<String> = shaders_after
+        .iter()
+        .filter(|f| !shaders_before.contains(f))
+        .map(|f| f.0.display().to_string())
+        .collect();
+    let webgl = set_report.get("webgl").cloned().unwrap_or_default();
+    checks.push(check(
+        "the shared GPU shader cache gains nothing",
+        changed.is_empty(),
+        if cfg!(target_os = "linux") {
+            format!(
+                "A compiled a new WebGL shader: {}; files added or changed in the user's Mesa and NVIDIA shader caches: {}",
+                webgl == "1",
+                if changed.is_empty() {
+                    "none".to_string()
+                } else {
+                    changed.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+                }
+            )
+        } else {
+            format!(
+                "A compiled a new WebGL shader: {}; on this system the driver's own shader cache is outside Unweb's folders and isn't checked here{}",
+                webgl == "1",
+                if cfg!(windows) {
+                    " (WebView2's GPU shader disk cache is turned off)"
+                } else {
+                    ""
+                }
+            )
+        },
     ));
 
     let passed = checks.iter().all(|c| c.pass);

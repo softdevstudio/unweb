@@ -1,14 +1,17 @@
 //! Strangers: browser windows that each get a throwaway store of their own.
 //!
 //! On Windows and Linux every stranger gets its own data folder under
-//! `<app data>/strangers/`, which the engine uses for cookies, storage,
+//! `<app data>/strangers/run-<random>/`, which the engine uses for cookies, storage,
 //! cache, service workers and everything else. Two strangers never share a
 //! folder, so they never share anything. When a stranger's window closes,
 //! its folder is deleted, and the deletion is checked: the folder must be
 //! gone and stay gone. On macOS each stranger gets a non-persistent
 //! WKWebsiteDataStore of its own, which keeps nothing on disk to delete.
 //!
-//! Folders left behind by a crash are deleted the next time Unweb starts.
+//! Each running copy of Unweb has a run folder of its own and holds a lock
+//! on `run-<random>.lock` next to it while it runs. At start, Unweb deletes
+//! every run folder whose lock nobody holds (left behind by a crash or a
+//! kill) and leaves the folders of copies still running alone.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,7 +52,13 @@ pub struct Wipe {
 }
 
 pub struct Strangers {
+    /// `<app data>/strangers`: every run's folder and lock file.
+    base: PathBuf,
+    /// This run's folder.
     root: PathBuf,
+    lock_path: PathBuf,
+    /// Held while this copy of Unweb runs.
+    lock: Mutex<Option<std::fs::File>>,
     next: AtomicU64,
     live: Mutex<HashMap<String, Option<PathBuf>>>,
     wipes: Mutex<Vec<Wipe>>,
@@ -58,14 +67,29 @@ pub struct Strangers {
 }
 
 impl Strangers {
-    /// Strangers keep their folders under `root`. Anything already there is
-    /// left over from a crash and is deleted now.
-    pub fn new(root: PathBuf) -> Strangers {
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
+    /// Strangers keep their folders in a new run folder under `base`. Run
+    /// folders nobody holds a lock on are left over from a crash and are
+    /// deleted now.
+    pub fn new(base: PathBuf) -> Strangers {
+        purge_abandoned(&base);
+        let id = random_hex();
+        let root = base.join(format!("run-{id}"));
+        let lock_path = base.join(format!("run-{id}.lock"));
+        let lock = std::fs::create_dir_all(&base)
+            .ok()
+            .and_then(|_| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&lock_path)
+                    .ok()
+            })
+            .and_then(|f| f.try_lock().ok().map(|_| f));
         Strangers {
+            base,
             root,
+            lock_path,
+            lock: Mutex::new(lock),
             next: AtomicU64::new(1),
             live: Mutex::new(HashMap::new()),
             wipes: Mutex::new(Vec::new()),
@@ -73,6 +97,18 @@ impl Strangers {
         }
     }
 
+    /// The folder that holds every run's folder and lock file.
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
+    /// This run's lock file.
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
+    }
+
+    /// This run's folder.
+    #[cfg(test)]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -94,6 +130,13 @@ impl Strangers {
         let builder = WebviewWindowBuilder::new(app, &label, target)
             .title(format!("Unweb: stranger {n}"))
             .inner_size(1100.0, 760.0);
+        // WebView2 keeps compiled GPU shaders in a disk cache a page can
+        // fill and later probe by timing. Turn it off (and keep wry's own
+        // default switches, which this replaces).
+        #[cfg(target_os = "windows")]
+        let builder = builder.additional_browser_args(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-shader-disk-cache",
+        );
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         let builder = builder.data_directory(folder.clone().expect("folder platforms"));
         #[cfg(target_os = "macos")]
@@ -103,10 +146,24 @@ impl Strangers {
         if let Ok(mut live) = self.live.lock() {
             live.insert(label.clone(), folder.clone());
         }
-        if let Err(e) = builder.build() {
-            self.closed(&label);
-            return Err(e);
-        }
+        let window = match builder.build() {
+            Ok(w) => w,
+            Err(e) => {
+                self.closed(&label);
+                return Err(e);
+            }
+        };
+        // WebKitGTK can offer to save HTTP sign-in passwords in the
+        // system keyring, which would outlive the stranger.
+        #[cfg(target_os = "linux")]
+        let _ = window.with_webview(|pv| {
+            use webkit2gtk::{WebViewExt, WebsiteDataManagerExt};
+            if let Some(m) = pv.inner().website_data_manager() {
+                m.set_persistent_credential_storage_enabled(false);
+            }
+        });
+        #[cfg(not(target_os = "linux"))]
+        let _ = window;
         Ok(label)
     }
 
@@ -186,8 +243,9 @@ impl Strangers {
         self.wipes.lock().map(|w| w.clone()).unwrap_or_default()
     }
 
-    /// At exit: delete whatever is still there, quickly. Anything an engine
-    /// process still holds is deleted the next time Unweb starts.
+    /// At exit: delete this run's folder, quickly, then let go of the lock.
+    /// Anything an engine process still holds is deleted the next time
+    /// Unweb starts, because the lock is free by then.
     pub fn wipe_all(&self) {
         if let Ok(mut l) = self.live.lock() {
             l.clear();
@@ -199,6 +257,53 @@ impl Strangers {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
+        let held = self.lock.lock().ok().and_then(|mut l| l.take());
+        drop(held);
+        if !self.root.exists() {
+            let _ = std::fs::remove_file(&self.lock_path);
+        }
+        // The strangers folder itself goes when no other run is using it.
+        let _ = std::fs::remove_dir(&self.base);
+    }
+}
+
+/// Deletes every run folder under `base` whose lock nobody holds, and
+/// anything else there that isn't a run folder or a lock in use.
+fn purge_abandoned(base: &Path) {
+    let Ok(rd) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(run) = name.strip_suffix(".lock") {
+            // A lock whose folder is gone: remove it if it's free.
+            if !base.join(run).exists() && lock_is_free(&p) {
+                let _ = std::fs::remove_file(&p);
+            }
+            continue;
+        }
+        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let lock = base.join(format!("{name}.lock"));
+        if name.starts_with("run-") && is_dir && lock.exists() && !lock_is_free(&lock) {
+            continue; // another copy of Unweb is using it
+        }
+        if is_dir {
+            let _ = std::fs::remove_dir_all(&p);
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
+        if lock.exists() && !p.exists() && lock_is_free(&lock) {
+            let _ = std::fs::remove_file(&lock);
+        }
+    }
+}
+
+/// True when nobody holds the lock on `path`.
+fn lock_is_free(path: &Path) -> bool {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(f) => f.try_lock().is_ok(),
+        Err(_) => false,
     }
 }
 
@@ -330,12 +435,52 @@ mod tests {
 
     #[test]
     fn leftovers_are_deleted_at_start() {
-        let root = temp("leftover");
-        std::fs::create_dir_all(root.join("stranger-9-abc/EBWebView")).unwrap();
-        std::fs::write(root.join("stranger-9-abc/cookies"), "x").unwrap();
-        let s = Strangers::new(root.clone());
-        assert!(!root.exists());
+        let base = temp("leftover");
+        // An old-style folder, an abandoned run with a free lock and one
+        // with no lock at all.
+        std::fs::create_dir_all(base.join("stranger-9-abc/EBWebView")).unwrap();
+        std::fs::write(base.join("stranger-9-abc/cookies"), "x").unwrap();
+        std::fs::create_dir_all(base.join("run-dead/stranger-1-x")).unwrap();
+        std::fs::write(base.join("run-dead.lock"), "").unwrap();
+        std::fs::create_dir_all(base.join("run-nolock/stranger-1-x")).unwrap();
+        let s = Strangers::new(base.clone());
+        assert!(!base.join("stranger-9-abc").exists());
+        assert!(!base.join("run-dead").exists());
+        assert!(!base.join("run-dead.lock").exists());
+        assert!(!base.join("run-nolock").exists());
         assert!(s.open_labels().is_empty());
+        s.wipe_all();
+        assert!(!base.exists());
+    }
+
+    #[test]
+    fn a_running_copy_keeps_its_folder() {
+        let base = temp("twocopies");
+        let first = Strangers::new(base.clone());
+        std::fs::create_dir_all(first.root().join("stranger-1-x")).unwrap();
+        std::fs::write(first.root().join("stranger-1-x/cookies"), "x").unwrap();
+        // A second copy starts while the first runs.
+        let second = Strangers::new(base.clone());
+        assert!(first.root().join("stranger-1-x/cookies").exists());
+        assert_ne!(first.root(), second.root());
+        // The second quits; the first's folder stays.
+        second.wipe_all();
+        assert!(first.root().join("stranger-1-x/cookies").exists());
+        first.wipe_all();
+        assert!(!base.exists());
+    }
+
+    #[test]
+    fn a_run_left_by_a_crash_goes_at_next_start() {
+        let base = temp("crash");
+        let crashed = Strangers::new(base.clone());
+        std::fs::create_dir_all(crashed.root().join("stranger-1-x")).unwrap();
+        let left = crashed.root().to_path_buf();
+        // A crash: the lock is let go without wiping.
+        drop(crashed);
+        let next = Strangers::new(base.clone());
+        assert!(!left.exists());
+        next.wipe_all();
     }
 
     #[test]

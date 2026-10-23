@@ -8,32 +8,37 @@
     {
       "name": "stranger A leaves every kind of trace",
       "pass": true,
-      "detail": "A's page reported {\"cacheapi\": \"1\", \"cachedjs\": \"1\", \"cookie\": \"1\", \"frame\": \"0\", \"idb\": \"1\", \"ls\": \"1\", \"step\": \"set\", \"sw\": \"1\", \"who\": \"A\"}; the other site's frame loaded: true"
+      "detail": "A's page reported {\"cacheapi\": \"1\", \"cachedjs\": \"1\", \"cookie\": \"1\", \"frame\": \"0\", \"idb\": \"1\", \"ls\": \"1\", \"step\": \"set\", \"sw\": \"1\", \"webgl\": \"1\", \"who\": \"A\"}; the other site's frame loaded: true"
     },
     {
       "name": "stranger A finds its own traces (control)",
       "pass": true,
-      "detail": "A found [cookie ls idb cacheapi sw]; A sent its server cookie: true; the cached file came from A's cache: true; frame: cookie 0 storage 1; 25 files in A's own folder"
+      "detail": "A found [cookie ls idb cacheapi sw]; A sent its server cookie: true; the cached file came from A's cache: true; frame: cookie 0 storage 1; 25 files in A's own folder; requests: /check+cookie /report+cookie"
     },
     {
       "name": "a stranger open at the same time finds nothing",
       "pass": true,
-      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0; its requests carried an earlier cookie: false; the cached file was fetched afresh: true"
+      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; requests meanwhile: /check /cached.js /report"
     },
     {
       "name": "a closed stranger's data is deleted",
       "pass": true,
-      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/stranger-1-5cec632b6542cb55) after 16.3s"
+      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-1-6e3c1e346c5d64ae) after 16.0s"
     },
     {
       "name": "a new stranger after one closed finds nothing",
       "pass": true,
-      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0; its requests carried an earlier cookie: false; the cached file was fetched afresh: true"
+      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; requests meanwhile: /check /cached.js /report"
     },
     {
       "name": "nothing is left on disk",
       "pass": true,
       "detail": "3 strangers wiped (stranger-1 gone, stranger-2 gone, stranger-3 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none"
+    },
+    {
+      "name": "the shared GPU shader cache gains nothing",
+      "pass": true,
+      "detail": "A compiled a new WebGL shader: true; files added or changed in the user's Mesa and NVIDIA shader caches: none"
     }
   ],
   "site_hits": [
@@ -57,7 +62,7 @@
     },
     {
       "path": "/report",
-      "query": "step=set&who=A&cookie=1&ls=1&idb=1&cacheapi=1&sw=1&cachedjs=1&frame=0",
+      "query": "step=set&who=A&cookie=1&ls=1&idb=1&cacheapi=1&sw=1&cachedjs=1&webgl=1&frame=0",
       "cookie": "unweb_http=1; unweb_js=1",
       "revalidate": false
     },
@@ -145,25 +150,25 @@
   "wipes": [
     {
       "label": "stranger-1",
-      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-1-5cec632b6542cb55",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-1-6e3c1e346c5d64ae",
       "gone": true,
-      "seconds": 16.312097944,
+      "seconds": 16.040263435,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
       "label": "stranger-2",
-      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-2-c87c2b096dfe9ce5",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-2-9707a98a0609bbd9",
       "gone": true,
-      "seconds": 14.344373924,
+      "seconds": 14.272387308,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
       "label": "stranger-3",
-      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-3-c20d9232fb8e4187",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-3-db52c9a2ba037738",
       "gone": true,
-      "seconds": 16.08387435,
+      "seconds": 16.071790196,
       "detail": "deleted, written again by the engine and deleted again (2 times), then gone for 10s"
     }
   ],
-  "seconds": 50.462633248
+  "seconds": 50.598163604
 }
