@@ -72,19 +72,7 @@ impl Strangers {
     /// deleted now.
     pub fn new(base: PathBuf) -> Strangers {
         purge_abandoned(&base);
-        let id = random_hex();
-        let root = base.join(format!("run-{id}"));
-        let lock_path = base.join(format!("run-{id}.lock"));
-        let lock = std::fs::create_dir_all(&base)
-            .ok()
-            .and_then(|_| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&lock_path)
-                    .ok()
-            })
-            .and_then(|f| f.try_lock().ok().map(|_| f));
+        let (root, lock_path, lock) = take_run(&base);
         Strangers {
             base,
             root,
@@ -267,6 +255,60 @@ impl Strangers {
     }
 }
 
+/// Makes this run's lock: the file is created and locked under a name no
+/// purge touches while it's young, then renamed into place, so another
+/// copy starting at the same moment never sees an unlocked run lock.
+fn take_run(base: &Path) -> (PathBuf, PathBuf, Option<std::fs::File>) {
+    let _ = std::fs::create_dir_all(base);
+    let mut last = None;
+    for _ in 0..5 {
+        let id = random_hex();
+        let root = base.join(format!("run-{id}"));
+        let lock_path = base.join(format!("run-{id}.lock"));
+        let fresh = base.join(format!("run-{id}.lock.new"));
+        let Ok(f) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fresh)
+        else {
+            continue;
+        };
+        // Another copy's probe can hold the lock for an instant.
+        let mut locked = false;
+        for _ in 0..20 {
+            if f.try_lock().is_ok() {
+                locked = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if locked && std::fs::rename(&fresh, &lock_path).is_ok() {
+            return (root, lock_path, Some(f));
+        }
+        drop(f);
+        let _ = std::fs::remove_file(&fresh);
+        last = Some((root, lock_path));
+    }
+    let (root, lock_path) = last.unwrap_or_else(|| {
+        let id = random_hex();
+        (
+            base.join(format!("run-{id}")),
+            base.join(format!("run-{id}.lock")),
+        )
+    });
+    (root, lock_path, None)
+}
+
+/// A lock file made in the last few seconds may belong to a copy that is
+/// still starting; purges leave it alone.
+fn young(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(10))
+}
+
 /// Deletes every run folder under `base` whose lock nobody holds, and
 /// anything else there that isn't a run folder or a lock in use.
 fn purge_abandoned(base: &Path) {
@@ -276,16 +318,27 @@ fn purge_abandoned(base: &Path) {
     for e in rd.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".lock.new") {
+            // A lock being made: only an old, free one is left over.
+            if !young(&p) && lock_is_free(&p) {
+                let _ = std::fs::remove_file(&p);
+            }
+            continue;
+        }
         if let Some(run) = name.strip_suffix(".lock") {
             // A lock whose folder is gone: remove it if it's free.
-            if !base.join(run).exists() && lock_is_free(&p) {
+            if !base.join(run).exists() && !young(&p) && lock_is_free(&p) {
                 let _ = std::fs::remove_file(&p);
             }
             continue;
         }
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let lock = base.join(format!("{name}.lock"));
-        if name.starts_with("run-") && is_dir && lock.exists() && !lock_is_free(&lock) {
+        if name.starts_with("run-")
+            && is_dir
+            && lock.exists()
+            && (young(&lock) || !lock_is_free(&lock))
+        {
             continue; // another copy of Unweb is using it
         }
         if is_dir {
@@ -433,6 +486,13 @@ mod tests {
         d
     }
 
+    /// Makes a file look a minute old.
+    fn age(p: &Path) {
+        let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+    }
+
     #[test]
     fn leftovers_are_deleted_at_start() {
         let base = temp("leftover");
@@ -442,14 +502,20 @@ mod tests {
         std::fs::write(base.join("stranger-9-abc/cookies"), "x").unwrap();
         std::fs::create_dir_all(base.join("run-dead/stranger-1-x")).unwrap();
         std::fs::write(base.join("run-dead.lock"), "").unwrap();
+        age(&base.join("run-dead.lock"));
+        // A lock still being made by a copy that is starting stays.
+        std::fs::write(base.join("run-new.lock.new"), "").unwrap();
         std::fs::create_dir_all(base.join("run-nolock/stranger-1-x")).unwrap();
         let s = Strangers::new(base.clone());
         assert!(!base.join("stranger-9-abc").exists());
         assert!(!base.join("run-dead").exists());
         assert!(!base.join("run-dead.lock").exists());
         assert!(!base.join("run-nolock").exists());
+        assert!(base.join("run-new.lock.new").exists());
         assert!(s.open_labels().is_empty());
         s.wipe_all();
+        std::fs::remove_file(base.join("run-new.lock.new")).unwrap();
+        let _ = std::fs::remove_dir(&base);
         assert!(!base.exists());
     }
 
@@ -476,8 +542,10 @@ mod tests {
         let crashed = Strangers::new(base.clone());
         std::fs::create_dir_all(crashed.root().join("stranger-1-x")).unwrap();
         let left = crashed.root().to_path_buf();
+        let lock = crashed.lock_path().to_path_buf();
         // A crash: the lock is let go without wiping.
         drop(crashed);
+        age(&lock);
         let next = Strangers::new(base.clone());
         assert!(!left.exists());
         next.wipe_all();

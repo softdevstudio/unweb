@@ -1,16 +1,14 @@
-date: 2026-10-23T17:09:48Z
-commit: 38f8c30
+date: 2026-10-23T17:18:05Z
+commit: 487d8ff
 os: linux (Linux 6.18.44-fc-v153 x86_64)
 rustc 1.97.0 (2d8144b78 2026-07-07)
 cargo 1.97.0 (c980f4866 2026-06-30)
 
 == cargo fmt --all -- --check
 == cargo clippy --locked --all-targets -- -D warnings
-    Checking unweb v0.0.1 (/home/claude/unweb/crates/unweb)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.84s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.32s
 == cargo test --locked
-   Compiling unweb v0.0.1 (/home/claude/unweb/crates/unweb)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.84s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target/debug/deps/unweb-c95f4dedd3269ef2)
 
 running 6 tests
@@ -24,12 +22,13 @@ test strangers::tests::wiping_deletes_and_checks ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.03s
 
 == cargo build --locked -p unweb
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s
+   Compiling unweb v0.0.1 (/home/claude/unweb/crates/unweb)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.87s
 == selftest
 PASS stranger A leaves every kind of trace: A's page reported {"cacheapi": "1", "cachedjs": "1", "cookie": "1", "frame": "0", "idb": "1", "ls": "1", "step": "set", "sw": "1", "webgl": "1", "who": "A"}; the other site's frame loaded: true
 PASS stranger A finds its own traces (control): A found [cookie ls idb cacheapi sw]; A sent its server cookie: true; the cached file came from A's cache: true; frame: cookie 0 storage 1; 25 files in A's own folder; requests: /check+cookie /report+cookie
 PASS a stranger open at the same time finds nothing: page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; requests meanwhile: /check /cached.js /report
-PASS a closed stranger's data is deleted: deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-1-6e3c1e346c5d64ae) after 16.0s
+PASS a closed stranger's data is deleted: deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-fe7208af6f1ba602/stranger-1-0de5e4a5e90f7322) after 16.4s
 PASS a new stranger after one closed finds nothing: page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; requests meanwhile: /check /cached.js /report
 PASS nothing is left on disk: 3 strangers wiped (stranger-1 gone, stranger-2 gone, stranger-3 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none
 PASS the shared GPU shader cache gains nothing: A compiled a new WebGL shader: true; files added or changed in the user's Mesa and NVIDIA shader caches: none

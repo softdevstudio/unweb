@@ -23,7 +23,7 @@
     {
       "name": "a closed stranger's data is deleted",
       "pass": true,
-      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-1-6e3c1e346c5d64ae) after 16.0s"
+      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-fe7208af6f1ba602/stranger-1-0de5e4a5e90f7322) after 16.4s"
     },
     {
       "name": "a new stranger after one closed finds nothing",
@@ -150,25 +150,25 @@
   "wipes": [
     {
       "label": "stranger-1",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-1-6e3c1e346c5d64ae",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-fe7208af6f1ba602/stranger-1-0de5e4a5e90f7322",
       "gone": true,
-      "seconds": 16.040263435,
+      "seconds": 16.352842792,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
       "label": "stranger-2",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-2-9707a98a0609bbd9",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-fe7208af6f1ba602/stranger-2-47ffd57282634736",
       "gone": true,
-      "seconds": 14.272387308,
+      "seconds": 14.278689113,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
       "label": "stranger-3",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-a6e1090c5533a188/stranger-3-db52c9a2ba037738",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-fe7208af6f1ba602/stranger-3-daa40181c7b5f12f",
       "gone": true,
-      "seconds": 16.071790196,
+      "seconds": 16.02396761,
       "detail": "deleted, written again by the engine and deleted again (2 times), then gone for 10s"
     }
   ],
-  "seconds": 50.598163604
+  "seconds": 50.629704767
 }
