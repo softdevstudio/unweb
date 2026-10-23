@@ -38,7 +38,7 @@ use tauri::{AppHandle, Manager, Url};
 
 use crate::strangers::{Strangers, USES_FOLDERS};
 
-const OVERALL: Duration = Duration::from_secs(150);
+const OVERALL: Duration = Duration::from_secs(240);
 
 /// The folder given after `--selftest`, if any.
 pub fn requested_dir() -> Option<PathBuf> {
@@ -185,6 +185,13 @@ fn serve(
             ("200 OK", "text/html", FRAME_SET.to_string())
         }
         (false, "/frame-check") => ("200 OK", "text/html", FRAME_CHECK.to_string()),
+        (true, "/nav1") | (true, "/popup") => (
+            "200 OK",
+            "text/html",
+            format!("<!doctype html><title>{path}</title><p>{path}</p>"),
+        ),
+        // A page that takes over the page's own Back and Forward.
+        (true, "/trap") => ("200 OK", "text/html", TRAP.to_string()),
         _ => ("204 No Content", "text/plain", String::new()),
     };
     let head = format!(
@@ -203,6 +210,12 @@ try { document.cookie = 'unweb_frame_js=1; max-age=3600; path=/; SameSite=None';
 try { localStorage.setItem('unweb_frame_ls', '1'); } catch (e) { }
 parent.postMessage('frame-set', '*');
 </script>"#;
+const TRAP: &str = r#"<!doctype html><title>trap</title><script>
+history.back = function () { fetch('/trapped?how=back'); };
+history.forward = function () { fetch('/trapped?how=forward'); };
+history.go = function () { fetch('/trapped?how=go'); };
+window.addEventListener('popstate', function () { fetch('/trapped?how=popstate'); });
+</script><p>trap</p>"#;
 const FRAME_CHECK: &str = r#"<!doctype html><script>
 var ls = ''; try { ls = localStorage.getItem('unweb_frame_ls') || ''; } catch (e) { ls = 'error'; }
 parent.postMessage('frame:' + (document.cookie.indexOf('unweb_frame') >= 0 ? 1 : 0) + ':' + (ls ? 1 : 0), '*');
@@ -404,8 +417,10 @@ fn wait_until(deadline: Instant, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
+/// Runs `js` in the webview `label` (a page or a bar) and returns the
+/// string it evaluates to.
 fn eval_string(app: &AppHandle, label: &str, js: &str) -> String {
-    let Some(w) = app.get_webview_window(label) else {
+    let Some(w) = app.get_webview(label) else {
         return String::new();
     };
     let (tx, rx) = std::sync::mpsc::channel();
@@ -423,13 +438,239 @@ fn eval_string(app: &AppHandle, label: &str, js: &str) -> String {
 }
 
 fn navigate(app: &AppHandle, label: &str, url: &str) {
-    if let (Some(w), Ok(u)) = (app.get_webview_window(label), Url::parse(url)) {
+    if let (Some(w), Ok(u)) = (
+        app.get_webview(&crate::window::page_label(label)),
+        Url::parse(url),
+    ) {
         let _ = w.navigate(u);
     }
 }
 
 fn close(app: &AppHandle, strangers: &Strangers, label: &str) {
     strangers.retire(app, label);
+}
+
+/// The page's address, as the page itself sees it.
+fn page_address(app: &AppHandle, window: &str) -> String {
+    eval_string(
+        app,
+        &crate::window::page_label(window),
+        "String(location.href)",
+    )
+}
+
+/// Asks the bar of `window` to run one of its commands, the way its
+/// buttons do.
+fn bar_call(app: &AppHandle, window: &str, name: &str, args: &str) {
+    let _ = eval_string(
+        app,
+        &crate::window::bar_label(window),
+        &format!("window.__TAURI_INTERNALS__.invoke('{name}', {args}); 'sent'"),
+    );
+}
+
+fn hits_on(site: &Server, path: &str) -> usize {
+    site.hits().iter().filter(|h| h.path == path).count()
+}
+
+/// Width and height of a webview's content, as it reports them.
+fn inner_size_of(app: &AppHandle, label: &str) -> (f64, f64) {
+    let v = eval_string(app, label, "innerWidth + 'x' + innerHeight");
+    let mut it = v.split('x').map(|n| n.parse::<f64>().unwrap_or(-1.0));
+    (it.next().unwrap_or(-1.0), it.next().unwrap_or(-1.0))
+}
+
+/// The window's content size in logical pixels.
+fn window_size(app: &AppHandle, window: &str) -> (f64, f64) {
+    app.get_window(window)
+        .and_then(|w| {
+            let s = w.inner_size().ok()?;
+            let f = w.scale_factor().ok()?;
+            Some((s.width as f64 / f, s.height as f64 / f))
+        })
+        .unwrap_or((-1.0, -1.0))
+}
+
+/// Checks the bar and the window of an open stranger (C).
+fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &str) -> Vec<Check> {
+    use crate::window::{bar_label, page_label, BAR_HEIGHT};
+    let w = "stranger-3";
+    let mut out = Vec::new();
+
+    // The bar shows the page's address.
+    let page_url = page_address(app, w);
+    let shows = wait_until(Instant::now() + Duration::from_secs(5), || {
+        eval_string(
+            app,
+            &bar_label(w),
+            "document.getElementById('address').value",
+        ) == page_url
+    });
+    out.push(check(
+        "the bar shows the page's address",
+        shows && page_url.contains("/check?who=C"),
+        format!(
+            "page at {page_url}; bar shows {:?}",
+            eval_string(
+                app,
+                &bar_label(w),
+                "document.getElementById('address').value"
+            )
+        ),
+    ));
+
+    // Typing an address, then Back and Forward past a page that took over
+    // history.back, history.go and popstate.
+    let before = hits_on(site, "/nav1");
+    bar_call(app, w, "go", &format!("{{ text: '{site_url}/nav1' }}"));
+    let went = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, w).ends_with("/nav1") && hits_on(site, "/nav1") > before
+    });
+    bar_call(app, w, "go", &format!("{{ text: '{site_url}/trap' }}"));
+    let trapped_page = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, w).ends_with("/trap")
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    bar_call(app, w, "back", "{}");
+    let backed = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, w).ends_with("/nav1")
+    });
+    let bar_after_back = wait_until(Instant::now() + Duration::from_secs(5), || {
+        eval_string(
+            app,
+            &bar_label(w),
+            "document.getElementById('address').value",
+        )
+        .ends_with("/nav1")
+    });
+    bar_call(app, w, "forward", "{}");
+    let forwarded = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, w).ends_with("/trap")
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let trapped = site
+        .hits()
+        .iter()
+        .filter(|h| h.path == "/trapped")
+        .map(|h| h.query.clone())
+        .collect::<Vec<_>>();
+    let reload_before = site.hits().iter().filter(|h| h.path == "/trap").count();
+    bar_call(app, w, "reload", "{}");
+    let reloaded = wait_until(Instant::now() + Duration::from_secs(10), || {
+        site.hits().iter().filter(|h| h.path == "/trap").count() > reload_before
+    });
+    out.push(check(
+        "the bar's address, back, forward and reload work, and a page can't trap them",
+        went && trapped_page && backed && bar_after_back && forwarded && reloaded
+            && trapped.iter().all(|q| q.contains("popstate")),
+        format!(
+            "typed address opened: {went}; back reached /nav1: {backed} (bar followed: {bar_after_back}); forward reached /trap: {forwarded}; reload fetched it again: {reloaded}; the page's own history functions called: {:?}",
+            trapped
+                .iter()
+                .filter(|q| !q.contains("popstate"))
+                .collect::<Vec<_>>()
+        ),
+    ));
+
+    // A page can't call the app, and its popups stay in the stranger.
+    let windows_before = app.windows().len();
+    let _ = eval_string(
+        app,
+        &page_label(w),
+        "(function(){var i=window.__TAURI_INTERNALS__;var tell=function(n,r){fetch('/cmd?name='+n+'&r='+r)};\
+         ['new_stranger','go','reload'].forEach(function(n){try{i.invoke(n,{text:'example.com'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
+         return 'sent'})()",
+    );
+    let answered = wait_until(Instant::now() + Duration::from_secs(10), || {
+        site.hits().iter().filter(|h| h.path == "/cmd").count() >= 3
+    });
+    let cmds: Vec<String> = site
+        .hits()
+        .iter()
+        .filter(|h| h.path == "/cmd")
+        .map(|h| h.query.clone())
+        .collect();
+    let popup_before = hits_on(site, "/popup");
+    let _ = eval_string(
+        app,
+        &page_label(w),
+        &format!("window.open('{site_url}/popup', '_blank'); 'sent'"),
+    );
+    let popup_here = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, w).ends_with("/popup") && hits_on(site, "/popup") > popup_before
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    let windows_after = app.windows().len();
+    out.push(check(
+        "a page can't call the app, and its popups stay in the same stranger",
+        answered
+            && cmds.iter().all(|q| q.contains("r=refused"))
+            && popup_here
+            && windows_after == windows_before,
+        format!(
+            "the page's calls: {cmds:?}; window.open opened in this stranger's page: {popup_here}; windows before {windows_before}, after {windows_after}"
+        ),
+    ));
+
+    // The bar keeps its height and the page fills the rest, before and
+    // after a resize.
+    let mut sizes = Vec::new();
+    let mut fits = true;
+    for size in [None, Some((900.0, 600.0))] {
+        if let (Some((sw, sh)), Some(win)) = (size, app.get_window(w)) {
+            let _ = win.set_size(tauri::LogicalSize::new(sw, sh));
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+        let (ww, wh) = window_size(app, w);
+        let (bw, bh) = inner_size_of(app, &bar_label(w));
+        let (pw, ph) = inner_size_of(app, &page_label(w));
+        let ok = (bh - BAR_HEIGHT).abs() <= 2.0
+            && (ph - (wh - BAR_HEIGHT)).abs() <= 3.0
+            && (bw - ww).abs() <= 3.0
+            && (pw - ww).abs() <= 3.0;
+        fits &= ok;
+        sizes.push(format!("window {ww}x{wh}: bar {bw}x{bh}, page {pw}x{ph}"));
+    }
+    out.push(check(
+        "the bar keeps its height and the page fills the rest",
+        fits,
+        sizes.join("; "),
+    ));
+
+    // New stranger from the bar: a separate window with a store of its own.
+    let before: Vec<String> = strangers.open_labels();
+    bar_call(app, w, "new_stranger", "{}");
+    let appeared = wait_until(Instant::now() + Duration::from_secs(10), || {
+        strangers.open_labels().len() > before.len()
+    });
+    let new_label = strangers
+        .open_labels()
+        .into_iter()
+        .find(|l| !before.contains(l));
+    let own_store = match (&new_label, USES_FOLDERS) {
+        (Some(l), true) => {
+            strangers.folder(l).is_some() && strangers.folder(l) != strangers.folder(w)
+        }
+        (Some(_), false) => true,
+        (None, _) => false,
+    };
+    let start_page = new_label
+        .as_ref()
+        .map(|l| {
+            wait_until(Instant::now() + Duration::from_secs(10), || {
+                eval_string(app, &page_label(l), "document.title") == "Unweb"
+            })
+        })
+        .unwrap_or(false);
+    out.push(check(
+        "New stranger opens another stranger with a store of its own",
+        appeared && own_store && start_page,
+        format!(
+            "opened: {}; its own store: {own_store}; it shows the start page: {start_page}",
+            new_label.as_deref().unwrap_or("nothing")
+        ),
+    ));
+    out
 }
 
 /// Every trace a /check report can find, by key.
@@ -627,7 +868,7 @@ fn run(
     // 1. A leaves traces.
     let set = wait_until(deadline, || site.report("set", "A").is_some());
     std::thread::sleep(Duration::from_millis(1500));
-    let user_agent = eval_string(app, "stranger-1", "navigator.userAgent");
+    let user_agent = eval_string(app, "page-1", "navigator.userAgent");
     let set_report = site.report("set", "A").unwrap_or_default();
     let frame_cookie_sent = other.hits().iter().any(|h| h.path == "/frame-set");
     checks.push(check(
@@ -769,15 +1010,17 @@ fn run(
     }
     checks.push(c_c);
 
+    // The bar and the window, on stranger C.
+    checks.extend(bar_checks(app, strangers, site, site_url));
+
     // 6. Everything closes; nothing may be left.
-    for l in strangers.open_labels() {
-        close(app, strangers, &l);
+    let opened = strangers.open_labels();
+    for l in &opened {
+        close(app, strangers, l);
     }
-    let all = wait_until(Instant::now() + Duration::from_secs(40), || {
+    let all = wait_until(Instant::now() + Duration::from_secs(60), || {
         let w = strangers.wipes();
-        ["stranger-2", "stranger-3"]
-            .iter()
-            .all(|l| w.iter().any(|x| x.label == *l))
+        opened.iter().all(|l| w.iter().any(|x| &x.label == l))
     });
     // Engines can write late (a deferred cache record, a cookie flush), so
     // look again after a while.

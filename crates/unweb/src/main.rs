@@ -6,8 +6,12 @@
 //! cookies, keeps everything it collects in a throwaway store of its own,
 //! and when it closes that store is deleted. See strangers.rs.
 
+#[cfg(target_os = "linux")]
+mod linux_layout;
+mod nav;
 mod selftest;
 mod strangers;
+mod window;
 
 use std::sync::Arc;
 
@@ -34,6 +38,53 @@ pub fn normalize_url(input: &str) -> Option<Url> {
         "http" | "https" if url.host_str().is_some() => Some(url),
         _ => None,
     }
+}
+
+/// The page webview that belongs to the bar `bar` (a bar can only steer its
+/// own stranger's page).
+fn page_for(bar: &tauri::Webview) -> Result<tauri::Webview, String> {
+    let window = window::window_of(bar.label()).ok_or("not a stranger's bar")?;
+    bar.app_handle()
+        .get_webview(&window::page_label(&window))
+        .ok_or_else(|| "this stranger is gone".to_string())
+}
+
+/// The bar's address field: opens what was typed in this stranger.
+#[tauri::command]
+async fn go(webview: tauri::Webview, text: String) -> Result<(), String> {
+    let url = normalize_url(&text).ok_or("Type a web address, like example.com")?;
+    page_for(&webview)?.navigate(url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn back(webview: tauri::Webview) -> Result<(), String> {
+    nav::step(&page_for(&webview)?, nav::Step::Back)
+}
+
+#[tauri::command]
+async fn forward(webview: tauri::Webview) -> Result<(), String> {
+    nav::step(&page_for(&webview)?, nav::Step::Forward)
+}
+
+#[tauri::command]
+async fn reload(webview: tauri::Webview) -> Result<(), String> {
+    page_for(&webview)?.reload().map_err(|e| e.to_string())
+}
+
+/// Opens another stranger, with a store of its own.
+#[tauri::command]
+async fn new_stranger(webview: tauri::Webview) -> Result<(), String> {
+    window::window_of(webview.label()).ok_or("not a stranger's bar")?;
+    let app = webview.app_handle().clone();
+    let strangers = app
+        .try_state::<Arc<Strangers>>()
+        .ok_or("not ready")?
+        .inner()
+        .clone();
+    strangers
+        .open(&app, None)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// The first command-line argument that is a web address.
@@ -68,11 +119,19 @@ fn main() {
     let setup_holder = holder.clone();
 
     let built = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            go,
+            back,
+            forward,
+            reload,
+            new_stranger
+        ])
         .setup(move |app| {
             let handle = app.handle().clone();
             let root = handle.path().app_data_dir()?.join("strangers");
             let strangers = Arc::new(Strangers::new(root));
             let _ = setup_holder.set(strangers.clone());
+            app.manage(strangers.clone());
             let start = match &selftest_dir {
                 Some(dir) => Some(selftest::start(&handle, strangers.clone(), dir.clone())?),
                 None => start_url_from_args(),

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewUrl};
 
 /// Window labels of strangers start with this.
 pub const PREFIX: &str = "stranger-";
@@ -102,7 +102,9 @@ impl Strangers {
     }
 
     /// Opens a new stranger at `url` (the start page when None). Returns
-    /// its window label.
+    /// its window label. The window holds two webviews: the bar (address,
+    /// back, forward, reload, new stranger) and the page. Both use the
+    /// stranger's own store; only the bar is granted app commands.
     pub fn open(&self, app: &AppHandle, url: Option<Url>) -> tauri::Result<String> {
         let n = self.next.fetch_add(1, Ordering::SeqCst);
         let label = format!("{PREFIX}{n}");
@@ -115,44 +117,21 @@ impl Strangers {
             Some(u) => WebviewUrl::External(u),
             None => WebviewUrl::App("index.html".into()),
         };
-        let builder = WebviewWindowBuilder::new(app, &label, target)
-            .title(format!("Unweb: stranger {n}"))
-            .inner_size(1100.0, 760.0);
-        // WebView2 keeps compiled GPU shaders in a disk cache a page can
-        // fill and later probe by timing. Turn it off (and keep wry's own
-        // default switches, which this replaces).
-        #[cfg(target_os = "windows")]
-        let builder = builder.additional_browser_args(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-shader-disk-cache",
-        );
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        let builder = builder.data_directory(folder.clone().expect("folder platforms"));
-        #[cfg(target_os = "macos")]
-        let builder = builder.incognito(true);
         // Remember the folder before the engine can write to it, so a
         // failed build is still cleaned up.
         if let Ok(mut live) = self.live.lock() {
             live.insert(label.clone(), folder.clone());
         }
-        let window = match builder.build() {
-            Ok(w) => w,
+        match crate::window::build(app, &label, n, folder.as_deref(), target) {
+            Ok(()) => Ok(label),
             Err(e) => {
+                if let Some(w) = app.get_window(&label) {
+                    let _ = w.destroy();
+                }
                 self.closed(&label);
-                return Err(e);
+                Err(e)
             }
-        };
-        // WebKitGTK can offer to save HTTP sign-in passwords in the
-        // system keyring, which would outlive the stranger.
-        #[cfg(target_os = "linux")]
-        let _ = window.with_webview(|pv| {
-            use webkit2gtk::{WebViewExt, WebsiteDataManagerExt};
-            if let Some(m) = pv.inner().website_data_manager() {
-                m.set_persistent_credential_storage_enabled(false);
-            }
-        });
-        #[cfg(not(target_os = "linux"))]
-        let _ = window;
-        Ok(label)
+        }
     }
 
     /// Labels of the strangers still open.
@@ -180,9 +159,11 @@ impl Strangers {
     /// into the folder later. Blocks, so call it off the main thread; the
     /// folder itself is deleted when the window is gone (see `closed`).
     pub fn retire(&self, app: &AppHandle, label: &str) {
-        if let Some(w) = app.get_webview_window(label) {
-            #[cfg(target_os = "linux")]
-            clear_engine_data(&w);
+        #[cfg(target_os = "linux")]
+        if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
+            clear_engine_data(&page);
+        }
+        if let Some(w) = app.get_window(label) {
             let _ = w.destroy();
         }
     }
@@ -363,7 +344,7 @@ fn lock_is_free(path: &Path) -> bool {
 /// Asks WebKitGTK to clear everything it holds for this stranger and waits
 /// (up to ten seconds) until it has.
 #[cfg(target_os = "linux")]
-fn clear_engine_data(w: &tauri::WebviewWindow) -> bool {
+fn clear_engine_data(w: &tauri::Webview) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     let asked = w.with_webview(move |pv| {
         use webkit2gtk::{WebViewExt, WebsiteDataManagerExtManual, WebsiteDataTypes};

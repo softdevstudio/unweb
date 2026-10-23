@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "bar",
+  "description": "Unweb's own bar at the top of each stranger. Pages are not listed, so web pages get no commands at all.",
+  "webviews": ["bar-*"],
+  "permissions": [
+    "allow-go",
+    "allow-back",
+    "allow-forward",
+    "allow-reload",
+    "allow-new-stranger"
+  ]
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Unweb bar</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #eef1f5; --fg: #1e293b; --field: #ffffff; --line: #cbd5e1; --muted: #64748b; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1e2430; --fg: #e2e8f0; --field: #111722; --line: #334155; --muted: #94a3b8; } }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { display: flex; align-items: center; gap: 6px; padding: 0 8px; box-sizing: border-box;
+           background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; border-bottom: 1px solid var(--line); }
+    button { width: 32px; height: 30px; border: 1px solid transparent; border-radius: 6px; background: none;
+             color: var(--fg); font-size: 17px; line-height: 1; cursor: pointer; padding: 0; }
+    button:hover:not(:disabled) { border-color: var(--line); }
+    button:disabled { color: var(--muted); opacity: .45; cursor: default; }
+    form { flex: 1; display: flex; }
+    input { flex: 1; height: 30px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--line);
+            border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; min-width: 0; }
+    #note { color: #b91c1c; font-size: 12px; white-space: nowrap; }
+    #new { width: auto; padding: 0 10px; font-size: 13px; border-color: var(--line); }
+  </style>
+</head>
+<body>
+  <button id="back" title="Back" aria-label="Back" disabled>&#8592;</button>
+  <button id="forward" title="Forward" aria-label="Forward" disabled>&#8594;</button>
+  <button id="reload" title="Reload" aria-label="Reload">&#8635;</button>
+  <form id="bar" autocomplete="off">
+    <input id="address" type="text" spellcheck="false" placeholder="Type a web address" aria-label="Web address">
+  </form>
+  <span id="note" role="status"></span>
+  <button id="new" title="Open another stranger, with nothing in common with this one">New stranger</button>
+  <script src="bar.js"></script>
+</body>
+</html>

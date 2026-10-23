@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-new-stranger"
+description = "Enables the new_stranger command without any pre-configured scope."
+commands.allow = ["new_stranger"]
+
+[[permission]]
+identifier = "deny-new-stranger"
+description = "Denies the new_stranger command without any pre-configured scope."
+commands.deny = ["new_stranger"]
