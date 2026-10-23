@@ -36,7 +36,8 @@ pub fn window_of(webview: &str) -> Option<String> {
     let n = webview
         .strip_prefix("bar-")
         .or_else(|| webview.strip_prefix("page-"))?;
-    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then(|| format!("{PREFIX}{n}"))
+    (!n.is_empty() && n.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .then(|| format!("{PREFIX}{n}"))
 }
 
 /// True for Unweb's own pages (the start page and the bar), which are
@@ -51,13 +52,22 @@ fn is_app_origin(url: &Url) -> bool {
 /// shows; never the bar or anything else of the app's.
 pub fn page_may_open(url: &Url) -> bool {
     if is_app_origin(url) {
-        return matches!(url.path(), "" | "/" | "/index.html");
+        return matches!(url.path(), "" | "/" | "/index.html")
+            && url.query().is_none()
+            && url.fragment().is_none();
     }
     match url.scheme() {
         "http" | "https" => !matches!(url.host_str(), Some("ipc.localhost")),
         "about" | "blob" | "data" => true,
         _ => false,
     }
+}
+
+/// What the bar may open: only itself. A link dropped on the bar, or
+/// anything else that tries to load a page there, is refused, so a site
+/// can never take the bar's place.
+pub fn bar_may_open(url: &Url) -> bool {
+    is_app_origin(url) && url.path() == "/bar.html" && url.query().is_none()
 }
 
 /// Builds the window, its bar and its page. `folder` is the stranger's
@@ -87,6 +97,9 @@ pub fn build(
         folder,
     )
     .disable_drag_drop_handler()
+    .on_navigation(bar_may_open)
+    .on_new_window(|_, _| NewWindowResponse::Deny)
+    .on_download(|_, _| false)
     // The page can finish loading before the bar is ready to show it.
     .on_page_load(move |_, payload| {
         if payload.event() == PageLoadEvent::Finished {
@@ -244,9 +257,15 @@ mod tests {
         assert_eq!(page_label("stranger-3"), "page-3");
         assert_eq!(bar_label("stranger-3"), "bar-3");
         assert_eq!(window_of("bar-12").as_deref(), Some("stranger-12"));
+        assert_eq!(
+            window_of("page-0a1b2c3d4e5f6a7b").as_deref(),
+            Some("stranger-0a1b2c3d4e5f6a7b")
+        );
+        assert_eq!(window_of("bar-0A1B"), None);
         assert_eq!(window_of("page-4").as_deref(), Some("stranger-4"));
         assert_eq!(window_of("bar-"), None);
         assert_eq!(window_of("bar-1x"), None);
+        assert_eq!(window_of("bar-../x"), None);
         assert_eq!(window_of("main"), None);
     }
 
@@ -265,5 +284,15 @@ mod tests {
         assert!(!ok("http://ipc.localhost/go"));
         assert!(!ok("file:///etc/passwd"));
         assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("tauri://localhost/index.html?x=1"));
+        assert!(!ok("tauri://localhost/#x"));
+        let bar = |s: &str| bar_may_open(&Url::parse(s).unwrap());
+        assert!(bar("tauri://localhost/bar.html"));
+        assert!(bar("http://tauri.localhost/bar.html"));
+        assert!(!bar("tauri://localhost/index.html"));
+        assert!(!bar("tauri://localhost/bar.html?x"));
+        assert!(!bar("http://127.0.0.1:8765/fakebar.html"));
+        assert!(!bar("data:text/html,x"));
+        assert!(!bar("about:blank"));
     }
 }

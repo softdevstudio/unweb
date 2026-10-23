@@ -122,26 +122,51 @@ jobs:
         run: |
           bash scripts/test-ca.sh "$RUNNER_TEMP/unweb-tls"
           echo "UNWEB_TEST_TLS=$RUNNER_TEMP/unweb-tls" >> "$GITHUB_ENV"
-      - name: Self-test the release build
+      # The self-test runs on what people install, not just the raw build:
+      # the installed .deb, the AppImage, the app copied from the .dmg and
+      # the program installed by the .msi.
+      - name: Self-test the installed builds
         run: |
           set -euo pipefail
-          case "${{ runner.os }}" in
-            Windows) bin=target/release/unweb.exe ;;
-            *) bin=target/release/unweb ;;
-          esac
-          if [ "${{ runner.os }}" = Linux ]; then
-            timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$bin" --selftest st
-          else
-            "$bin" --selftest st
-          fi
-          python3 - <<'EOF'
-          import json
-          r = json.load(open("st/selftest.json"))
+          b=target/release/bundle
+          selftest() { # name, program and arguments
+            local out="$PWD/st-$1"; shift
+            if [ "${{ runner.os }}" = Linux ]; then
+              timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$@" --selftest "$out"
+            else
+              "$@" --selftest "$out"
+            fi
+            python3 - "$out/selftest.json" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
           for c in r["checks"]:
-              print(("PASS" if c["pass"] else "FAIL"), c["name"] + ":", c["detail"])
+              print(("SKIP" if c.get("skipped") else "PASS" if c["pass"] else "FAIL"), c["name"] + ":", c["detail"])
           print("engine:", r["user_agent"])
           assert r["passed"], "self-test failed"
+          assert not any(c.get("skipped") for c in r["checks"]), "a check did not run"
           EOF
+          }
+          case "${{ runner.os }}" in
+            Linux)
+              sudo apt-get install -y "./$(ls $b/deb/*.deb | head -n1)"
+              selftest deb /usr/bin/unweb
+              app="$(ls $b/appimage/*.AppImage | head -n1)"
+              chmod +x "$app"
+              selftest appimage "$app" --appimage-extract-and-run
+              ;;
+            macOS)
+              hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/unweb-dmg" "$(ls $b/dmg/*.dmg | head -n1)"
+              cp -R "$RUNNER_TEMP/unweb-dmg/Unweb.app" /Applications/
+              hdiutil detach "$RUNNER_TEMP/unweb-dmg"
+              selftest dmg /Applications/Unweb.app/Contents/MacOS/unweb
+              ;;
+            Windows)
+              msi="$(cygpath -w "$(ls $b/msi/*.msi | head -n1)")"
+              msiexec //i "$msi" //qn //l*v msi.log
+              exe="$(ls "/c/Program Files/Unweb/"*.exe | head -n1)"
+              selftest msi "$exe"
+              ;;
+          esac
       - name: Collect installers
         run: |
           set -euo pipefail

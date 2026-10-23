@@ -78,9 +78,30 @@ else
   kill "$watchdog" 2>/dev/null
 fi
 set -e
-grep -E '^(PASS|FAIL|selftest)' "$raw" | tee -a "$log" || true
+grep -E '^(PASS|FAIL|SKIP|selftest)' "$raw" | tee -a "$log" || true
+
+# After Unweb has exited, none of the folders it or its engine could use may
+# be left, not even empty.
+sleep 5
+case "$os" in
+  linux) after=("$HOME/.local/share/org.unweb.app" "$HOME/.cache/org.unweb.app" "$HOME/.local/share/unweb" "$HOME/.cache/unweb") ;;
+  macos) after=("$HOME/Library/Application Support/org.unweb.app" "$HOME/Library/Caches/org.unweb.app" "$HOME/Library/WebKit/org.unweb.app" "$HOME/Library/HTTPStorages/org.unweb.app" "$HOME/Library/Caches/unweb" "$HOME/Library/WebKit/unweb" "$HOME/Library/HTTPStorages/unweb") ;;
+  windows) after=("${APPDATA:-}/org.unweb.app" "${LOCALAPPDATA:-}/org.unweb.app") ;;
+  *) after=() ;;
+esac
+left=()
+for d in "${after[@]}"; do
+  [ -e "$d" ] && left+=("$d")
+done
+if [ "${#left[@]}" -eq 0 ]; then
+  line="PASS nothing is left after Unweb exits: none of ${#after[@]} folders exists"
+else
+  line="FAIL nothing is left after Unweb exits: still there: ${left[*]}"
+  [ "$status" -eq 0 ] && status=1
+fi
+echo "$line" | tee -a "$log" >> "$raw"
 echo "selftest exit code: $status" | tee -a "$log"
-grep -E '^(PASS|FAIL|selftest)' "$raw" > "$out/selftest.txt" || true
+grep -E '^(PASS|FAIL|SKIP|selftest)' "$raw" > "$out/selftest.txt" || true
 if [ "$status" -eq 0 ]; then
   annotate notice "selftest passed" "$out/selftest.txt"
 else

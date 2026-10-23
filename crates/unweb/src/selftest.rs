@@ -372,11 +372,18 @@ fn check_page(who: &str, other: &str) -> String {
 struct Check {
     name: &'static str,
     pass: bool,
+    /// Not run here (it needs something only CI sets up).
+    skipped: bool,
     detail: String,
 }
 
 fn check(name: &'static str, pass: bool, detail: String) -> Check {
-    Check { name, pass, detail }
+    Check {
+        name,
+        pass,
+        skipped: false,
+        detail,
+    }
 }
 
 #[derive(Serialize)]
@@ -437,14 +444,22 @@ pub fn start(
         for c in &outcome.checks {
             println!(
                 "{} {}: {}",
-                if c.pass { "PASS" } else { "FAIL" },
+                match (c.skipped, c.pass) {
+                    (true, true) => "SKIP",
+                    (_, true) => "PASS",
+                    (_, false) => "FAIL",
+                },
                 c.name,
                 c.detail
             );
         }
         println!(
-            "selftest {} in {:.1}s on {} ({})",
+            "selftest {}{} in {:.1}s on {} ({})",
             if passed { "passed" } else { "FAILED" },
+            match outcome.checks.iter().filter(|c| c.skipped).count() {
+                0 => String::new(),
+                n => format!(" with {n} check(s) not run"),
+            },
             outcome.seconds,
             outcome.os,
             outcome.user_agent
@@ -539,9 +554,14 @@ fn window_size(app: &AppHandle, window: &str) -> (f64, f64) {
 }
 
 /// Checks the bar and the window of an open stranger (C).
-fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &str) -> Vec<Check> {
+fn bar_checks(
+    app: &AppHandle,
+    strangers: &Strangers,
+    site: &Server,
+    site_url: &str,
+    w: &str,
+) -> Vec<Check> {
     use crate::window::{bar_label, page_label, BAR_HEIGHT};
-    let w = "stranger-3";
     let mut out = Vec::new();
 
     // The bar shows the page's address.
@@ -619,6 +639,25 @@ fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &
         ),
     ));
 
+    // Nothing can load a page in the bar (a link dropped on it, say).
+    let barnav_before = hits_on(site, "/barnav");
+    let _ = eval_string(
+        app,
+        &bar_label(w),
+        &format!("location.href = '{site_url}/barnav'; 'sent'"),
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    let bar_url = eval_string(app, &bar_label(w), "String(location.href)");
+    let bar_kept = bar_url.ends_with("/bar.html") && hits_on(site, "/barnav") == barnav_before;
+    out.push(check(
+        "nothing can load another page in the bar",
+        bar_kept,
+        format!(
+            "after the bar was sent to another address it shows {bar_url}; requests for that address: {}",
+            hits_on(site, "/barnav") - barnav_before
+        ),
+    ));
+
     // A page can't call the app, and its popups stay in the stranger.
     let windows_before = app.windows().len();
     let _ = eval_string(
@@ -637,6 +676,16 @@ fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &
         .filter(|h| h.path == "/cmd")
         .map(|h| h.query.clone())
         .collect();
+    // What a page can learn about its stranger: Tauri puts the window's
+    // label in the page, so it must be random.
+    let seen_label = eval_string(
+        app,
+        &page_label(w),
+        "(function(){try{return String(window.__TAURI_INTERNALS__.metadata.currentWindow.label)}catch(e){return ''}})()",
+    );
+    let label_random = seen_label
+        .strip_prefix(crate::strangers::PREFIX)
+        .is_some_and(|r| r.len() == 16 && r.bytes().all(|b| b.is_ascii_hexdigit()));
     let popup_before = hits_on(site, "/popup");
     let _ = eval_string(
         app,
@@ -653,9 +702,10 @@ fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &
         answered
             && cmds.iter().all(|q| q.contains("r=refused"))
             && popup_here
-            && windows_after == windows_before,
+            && windows_after == windows_before
+            && label_random,
         format!(
-            "the page's calls: {cmds:?}; window.open opened in this stranger's page: {popup_here}; windows before {windows_before}, after {windows_after}"
+            "the page's calls: {cmds:?}; window.open opened in this stranger's page: {popup_here}; windows before {windows_before}, after {windows_after}; the window name the page can read is random: {label_random} ({seen_label})"
         ),
     ));
 
@@ -1001,6 +1051,41 @@ fn normal_browser_snapshot() -> Vec<FileMark> {
     out
 }
 
+/// Folders a web engine names after the app (its bundle identifier, or
+/// the program's name when it runs unbundled) and could write to.
+pub fn engine_app_folders(identifier: &str) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for name in [identifier, "unweb"] {
+        if cfg!(target_os = "macos") {
+            for d in [
+                "Library/WebKit",
+                "Library/HTTPStorages",
+                "Library/Caches",
+                "Library/Cookies",
+                "Library/Saved Application State",
+            ] {
+                out.push(home.join(d).join(name));
+            }
+            out.push(home.join(format!("Library/Saved Application State/{name}.savedState")));
+            out.push(home.join(format!("Library/Cookies/{name}.binarycookies")));
+        } else if cfg!(target_os = "linux") {
+            out.push(home.join(".local/share").join(name));
+            out.push(home.join(".cache").join(name));
+        } else if cfg!(windows) {
+            for var in ["LOCALAPPDATA", "APPDATA"] {
+                if let Some(v) = std::env::var_os(var) {
+                    out.push(PathBuf::from(v).join(name));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The test's local servers.
 struct Servers<'a> {
     site: &'a Server,
@@ -1061,7 +1146,10 @@ fn run(
     // 1. A leaves traces.
     let set = wait_until(deadline, || site.report("set", "A").is_some());
     std::thread::sleep(Duration::from_millis(1500));
-    let user_agent = eval_string(app, "page-1", "navigator.userAgent");
+    // A is the stranger opened at start.
+    let la = strangers.opened().first().cloned().unwrap_or_default();
+    let la = la.as_str();
+    let user_agent = eval_string(app, &crate::window::page_label(la), "navigator.userAgent");
     let set_report = site.report("set", "A").unwrap_or_default();
     let frame_cookie_sent = other.hits().iter().any(|h| h.path == "/frame-set");
     checks.push(check(
@@ -1074,7 +1162,7 @@ fn run(
             set_report
         ),
     ));
-    let folder_a = strangers.folder("stranger-1");
+    let folder_a = strangers.folder(la);
     let a_files = folder_a
         .as_ref()
         .map(|d| {
@@ -1085,7 +1173,7 @@ fn run(
         .unwrap_or(0);
 
     // 2. Control: A finds its own traces.
-    navigate(app, "stranger-1", &format!("{site_url}/check?who=A"));
+    navigate(app, la, &format!("{site_url}/check?who=A"));
     let a_checked = wait_until(Instant::now() + Duration::from_secs(20), || {
         site.report("check", "A").is_some()
     });
@@ -1150,16 +1238,16 @@ fn run(
     // then upgraded (the control); B and C must visit plainly.
     let mut hsts_a: Option<(bool, Vec<Seen>)> = None;
     if let Some(h) = hsts {
-        navigate(app, "stranger-1", &h.https_url("/learn?who=A"));
+        navigate(app, la, &h.https_url("/learn?who=A"));
         let learned = wait_until(Instant::now() + Duration::from_secs(10), || {
             h.seen()
                 .iter()
                 .any(|x| matches!(x, Seen::Https(p) if p.contains("who=A")))
         });
         std::thread::sleep(Duration::from_millis(500));
-        hsts_a = Some((learned, hsts_probe(app, h, "stranger-1", "A")));
+        hsts_a = Some((learned, hsts_probe(app, h, la, "A")));
         // Back to a page that keeps A's service worker awake.
-        navigate(app, "stranger-1", &format!("{site_url}/check?who=A2"));
+        navigate(app, la, &format!("{site_url}/check?who=A2"));
         wait_until(Instant::now() + Duration::from_secs(10), || {
             site.report("check", "A2").is_some()
         });
@@ -1167,6 +1255,7 @@ fn run(
 
     // 3. B, open at the same time.
     let b = strangers.open(app, Url::parse(&format!("{site_url}/check?who=B")).ok());
+    let lb = b.as_ref().cloned().unwrap_or_default();
     let b_ok = b.is_ok()
         && wait_until(Instant::now() + Duration::from_secs(25), || {
             site.report("check", "B").is_some()
@@ -1181,7 +1270,7 @@ fn run(
         c_b.pass = false;
     }
     checks.push(c_b);
-    let hsts_b = hsts.map(|h| hsts_probe(app, h, "stranger-2", "B"));
+    let hsts_b = hsts.map(|h| hsts_probe(app, h, &lb, "B"));
 
     // 4. A closes and its data goes. Its service worker must stop with it.
     let pings_open = sw_pings(site, "A");
@@ -1189,16 +1278,13 @@ fn run(
     let pings_at_close = sw_pings(site, "A");
     // Closing clears the engine's data first (on Linux), then removes the
     // window; count from the moment the window is gone.
-    close(app, strangers, "stranger-1");
+    close(app, strangers, la);
     let pings_gone = sw_pings(site, "A");
     let gone_at = Instant::now();
     let wiped = wait_until(Instant::now() + Duration::from_secs(40), || {
-        strangers.wipes().iter().any(|w| w.label == "stranger-1")
+        strangers.wipes().iter().any(|w| w.label == la)
     });
-    let wipe_a = strangers
-        .wipes()
-        .into_iter()
-        .find(|w| w.label == "stranger-1");
+    let wipe_a = strangers.wipes().into_iter().find(|w| w.label == la);
     checks.push(check(
         "a closed stranger's data is deleted",
         wiped
@@ -1244,6 +1330,7 @@ fn run(
 
     // 5. C, opened after A closed.
     let c = strangers.open(app, Url::parse(&format!("{site_url}/check?who=C")).ok());
+    let lc = c.as_ref().cloned().unwrap_or_default();
     let c_ok = c.is_ok()
         && wait_until(Instant::now() + Duration::from_secs(25), || {
             site.report("check", "C").is_some()
@@ -1260,8 +1347,8 @@ fn run(
     checks.push(c_c);
 
     // The bar and the window, on stranger C.
-    checks.extend(bar_checks(app, strangers, site, site_url));
-    let hsts_c = hsts.map(|h| hsts_probe(app, h, "stranger-3", "C"));
+    checks.extend(bar_checks(app, strangers, site, site_url, &lc));
+    let hsts_c = hsts.map(|h| hsts_probe(app, h, &lc, "C"));
     checks.push(match (servers.hsts, &hsts_a) {
         (Some(Ok(_)), Some((learned, a))) => {
             let a_up = a.contains(&Seen::Upgraded);
@@ -1287,11 +1374,14 @@ fn run(
             false,
             format!("the HTTPS server didn't start: {e}"),
         ),
-        _ => check(
-            "HSTS learned by one stranger doesn't reach another",
-            std::env::var_os("CI").is_none(),
-            "not run: no trusted test certificate (scripts/test-ca.sh, then UNWEB_TEST_TLS); required in CI".into(),
-        ),
+        _ => Check {
+            skipped: true,
+            ..check(
+                "HSTS learned by one stranger doesn't reach another",
+                std::env::var_os("CI").is_none(),
+                "not run: no trusted test certificate (scripts/test-ca.sh, then UNWEB_TEST_TLS); required in CI".into(),
+            )
+        },
     });
 
     // 6. Everything closes; nothing may be left.
@@ -1321,7 +1411,7 @@ fn run(
     left_in_root.retain(|p| !strangers.belongs_to_other_live_run(p));
     let mut elsewhere = Vec::new();
     let paths = app.path();
-    for d in [
+    let mut ours: Vec<PathBuf> = [
         paths.app_data_dir(),
         paths.app_local_data_dir(),
         paths.app_cache_dir(),
@@ -1329,7 +1419,12 @@ fn run(
     ]
     .into_iter()
     .flatten()
-    {
+    .collect();
+    ours.extend(engine_app_folders(&app.config().identifier));
+    for d in ours {
+        if d.is_file() {
+            elsewhere.push(d.clone());
+        }
         files_under(&d, &root, &mut elsewhere);
     }
     elsewhere.sort();

@@ -24,7 +24,7 @@ A link that asks for a new window opens in the same stranger, so it stays in tha
 
 On Windows and Linux each stranger gets a data folder of its own, which the engine uses for cookies, storage, its cache, service workers and everything else a site can leave. No two strangers share a folder. On macOS each stranger gets its own WKWebView data store that keeps nothing on disk.
 
-The bar is part of the same window and uses the same store, so it leaves nothing behind either. It is the only part of the window that can ask Unweb to do anything; a web page can't call the app at all.
+The bar is part of the same window and keeps nothing of its own: on Windows and Linux it shares the stranger's folder, on macOS it gets its own empty in-memory store. It is the only part of the window that can ask Unweb to do anything; a web page can't call the app at all. Nothing but the bar itself can be loaded in the bar, so a link dropped on it, or any other trick, can't put a web page in its place. Each stranger's window has a random internal name, which a page can read (it is how Tauri, the framework under Unweb, tells windows apart), so a site can't tell which stranger of a run it is in.
 
 When a stranger closes, Unweb deletes its folder and checks that it stays deleted. On Linux it first tells the engine to clear the stranger's data, then waits until the engine has stopped writing to the folder (WebKitGTK writes a few cache records a few seconds after a page closes), deletes it, and watches it for ten seconds in case anything writes to it again. When the last stranger closes, Unweb waits for these deletions before it quits. On macOS, where nothing is on disk, Unweb clears the stranger's store before the window goes, because WKWebView otherwise lets a closed stranger's service worker run on for a few seconds. Even then, a worker that was busy can make a call or two in the first second after the window goes; the self-test counts these and requires silence from two seconds on. By then the stranger's store is already empty, so such a call carries nothing the stranger collected.
 
@@ -38,7 +38,9 @@ Unweb also turns off what the engine would otherwise keep outside the stranger's
 - **Your device.** All strangers on one machine share its screen size, fonts and hardware, so a site that fingerprints devices could link them.
 - **It's not a sandbox for dangerous sites.** Your normal browser's data stays untouched, but a stranger runs on the same system engine as everything else.
 - **Your graphics driver's own caches on Windows and macOS.** The driver can keep compiled shaders in a cache of its own (DirectX's shader cache, Apple's Metal cache), shared by every program. Unweb can't turn those off, so in theory a page could recognize, by timing, that a shader was compiled on this machine before.
-- **A stranger closed by force.** A page that closes its own window, or killing Unweb, skips the careful wipe. Whatever is left is deleted the next time Unweb starts.
+- **A stranger closed by force.** Killing Unweb skips the careful wipe; whatever is left is deleted the next time Unweb starts. A page that closes itself with `window.close()` behaves differently per system: on Linux the page goes and the window stays with its bar, and closing that window wipes the stranger as usual; on Windows and macOS see the next start.
+- **Memory on Linux.** Each stranger has its own network process in WebKitGTK, and because of a limitation in Tauri (issue 14626) a closed stranger's process stays in memory, about 55 MB, until Unweb quits. Its data is already cleared and its folder deleted. If you open and close many strangers, restart Unweb now and then.
+- **Being in Unweb.** A page can tell it runs inside a Tauri app, because Tauri adds a small script to every page (its calls are refused).
 
 ## Self-test
 
@@ -63,7 +65,7 @@ The HSTS check needs a certificate the engine trusts. `scripts/test-ca.sh` makes
 
 A check only counts something as carried over where A's own control could see it. Every engine tested so far keeps a cookie set by a frame from another site away from that frame on the next page, even in A, so that cookie is reported as not judged. On macOS, WKWebView keeps no HTTP cache from one of a stranger's pages to the next, so the cache and ETag controls can't show anything there and the detail says so.
 
-Results are written to `results-dir/selftest.json`; the exit code is 0 only if every check passed. CI runs it on Windows, macOS and Linux on every push. Results recorded on the development machine (Linux) are in [test/results/latest](test/results/latest).
+Results are written to `results-dir/selftest.json`; the exit code is 0 only if every check passed. A check that couldn't run here (HSTS without its certificate) is printed as SKIP and counts as a failure in CI. `scripts/record-results.sh` also checks, after Unweb has exited, that none of the folders it or its engine could use is left, not even empty. The release workflow runs the self-test on what people install: the installed .deb, the AppImage, the app from the .dmg and the program installed by the .msi. CI runs it on Windows, macOS and Linux on every push. Results recorded on the development machine (Linux) are in [test/results/latest](test/results/latest).
 
 ## Build from source
 

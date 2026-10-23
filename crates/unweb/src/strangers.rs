@@ -61,6 +61,8 @@ pub struct Strangers {
     lock: Mutex<Option<std::fs::File>>,
     next: AtomicU64,
     live: Mutex<HashMap<String, Option<PathBuf>>>,
+    /// Every stranger's label, in the order they were opened.
+    opened: Mutex<Vec<String>>,
     wipes: Mutex<Vec<Wipe>>,
     /// Wipes still running.
     pending: AtomicUsize,
@@ -80,6 +82,7 @@ impl Strangers {
             lock: Mutex::new(lock),
             next: AtomicU64::new(1),
             live: Mutex::new(HashMap::new()),
+            opened: Mutex::new(Vec::new()),
             wipes: Mutex::new(Vec::new()),
             pending: AtomicUsize::new(0),
         }
@@ -125,9 +128,12 @@ impl Strangers {
     /// stranger's own store; only the bar is granted app commands.
     pub fn open(&self, app: &AppHandle, url: Option<Url>) -> tauri::Result<String> {
         let n = self.next.fetch_add(1, Ordering::SeqCst);
-        let label = format!("{PREFIX}{n}");
+        // Pages can read their window's label (Tauri puts it in the page),
+        // so it is random: a site can't tell the third stranger of a run
+        // from the fourth. The number is only in the window title.
+        let label = format!("{PREFIX}{}", random_hex());
         let folder = if USES_FOLDERS {
-            Some(self.root.join(format!("{label}-{}", random_hex())))
+            Some(self.root.join(&label))
         } else {
             None
         };
@@ -140,6 +146,9 @@ impl Strangers {
         if let Ok(mut live) = self.live.lock() {
             live.insert(label.clone(), folder.clone());
         }
+        if let Ok(mut o) = self.opened.lock() {
+            o.push(label.clone());
+        }
         match crate::window::build(app, &label, n, folder.as_deref(), target) {
             Ok(()) => Ok(label),
             Err(e) => {
@@ -150,6 +159,11 @@ impl Strangers {
                 Err(e)
             }
         }
+    }
+
+    /// Every stranger's label, in the order they were opened.
+    pub fn opened(&self) -> Vec<String> {
+        self.opened.lock().map(|o| o.clone()).unwrap_or_default()
     }
 
     /// Labels of the strangers still open.
@@ -259,8 +273,13 @@ impl Strangers {
         if !self.root.exists() {
             let _ = std::fs::remove_file(&self.lock_path);
         }
-        // The strangers folder itself goes when no other run is using it.
+        // The strangers folder itself goes when no other run is using it,
+        // and the app's data folder when nothing else is in it, so not even
+        // an empty folder shows Unweb was used.
         let _ = std::fs::remove_dir(&self.base);
+        if let Some(parent) = self.base.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }
 
