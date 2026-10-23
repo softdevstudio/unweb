@@ -59,6 +59,9 @@ struct Hit {
     revalidate: bool,
     /// The If-None-Match header, if any (an ETag handed out earlier).
     etag: String,
+    /// When the request arrived.
+    #[serde(skip)]
+    at: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -166,6 +169,7 @@ fn serve(
             cookie,
             revalidate,
             etag: etag.clone(),
+            at: Some(Instant::now()),
         });
     }
     let other = other.lock().map(|o| o.clone()).unwrap_or_default();
@@ -1027,10 +1031,16 @@ fn hsts_probe(
 }
 
 fn sw_pings(site: &Server, who: &str) -> usize {
+    sw_pings_after(site, who, None)
+}
+
+/// Service worker calls from `who` that arrived after `since`.
+fn sw_pings_after(site: &Server, who: &str, since: Option<Instant>) -> usize {
     let tag = format!("who={who}");
     site.hits()
         .iter()
         .filter(|h| h.path == "/sw-ping" && h.query == tag)
+        .filter(|h| since.is_none_or(|s| h.at.is_some_and(|a| a > s)))
         .count()
 }
 
@@ -1181,6 +1191,7 @@ fn run(
     // window; count from the moment the window is gone.
     close(app, strangers, "stranger-1");
     let pings_gone = sw_pings(site, "A");
+    let gone_at = Instant::now();
     let wiped = wait_until(Instant::now() + Duration::from_secs(40), || {
         strangers.wipes().iter().any(|w| w.label == "stranger-1")
     });
@@ -1208,20 +1219,26 @@ fn run(
         },
     ));
 
-    let pings_at_wipe = sw_pings(site, "A");
-    std::thread::sleep(Duration::from_secs(5));
-    let pings_later = sw_pings(site, "A");
+    // Watch for at least 7 s after the window went (the wipe may already
+    // have taken longer).
+    if let Some(left) = Duration::from_secs(7).checked_sub(gone_at.elapsed()) {
+        std::thread::sleep(left);
+    }
+    let after_window = sw_pings_after(site, "A", Some(gone_at));
+    let after_2s = sw_pings_after(site, "A", Some(gone_at + Duration::from_secs(2)));
     let sw_was_running = pings_at_close > pings_open;
     checks.push(check(
         "a closed stranger's service worker stops",
-        // One call already on its way when the window went is allowed.
-        sw_was_running && pings_later == pings_at_wipe && pings_at_wipe <= pings_gone + 1,
+        // WKWebView lets a worker finish what it is doing for a moment, so
+        // calls in the first 2 s after the window goes are counted, not
+        // failed. After that there must be none.
+        sw_was_running && after_2s == 0,
         format!(
-            "A's service worker called home {} times in the 1.5 s before A closed (it was running: {sw_was_running}); {} times while A was closing; {} times between the window going and the end of the wipe; {} times in the 5 s after",
+            "A's service worker called home {} times in the 1.5 s before A closed (it was running: {sw_was_running}); {} times while A was closing; {} times in the 2 s after the window went; {after_2s} times from then until {:.0} s after",
             pings_at_close - pings_open,
             pings_gone - pings_at_close,
-            pings_at_wipe - pings_gone,
-            pings_later - pings_at_wipe
+            after_window - after_2s,
+            gone_at.elapsed().as_secs_f64()
         ),
     ));
 
@@ -1296,6 +1313,12 @@ fn run(
     let mut left_in_root = Vec::new();
     files_under(&root, Path::new("/nonexistent-skip"), &mut left_in_root);
     left_in_root.retain(|p| p != strangers.lock_path());
+    // Another copy of Unweb running on this machine keeps its own run.
+    let other_runs = left_in_root
+        .iter()
+        .filter(|p| strangers.belongs_to_other_live_run(p))
+        .count();
+    left_in_root.retain(|p| !strangers.belongs_to_other_live_run(p));
     let mut elsewhere = Vec::new();
     let paths = app.path();
     for d in [
@@ -1315,7 +1338,7 @@ fn run(
         "nothing is left on disk",
         all && wipes.iter().all(|w| w.gone) && left_in_root.is_empty() && elsewhere.is_empty(),
         format!(
-            "{} strangers wiped ({}); files left in the strangers folder: {:?}; files anywhere else in Unweb's folders: {}",
+            "{} strangers wiped ({}); files left in the strangers folder: {:?}{}; files anywhere else in Unweb's folders: {}",
             wipes.len(),
             wipes
                 .iter()
@@ -1323,6 +1346,11 @@ fn run(
                 .collect::<Vec<_>>()
                 .join(", "),
             left_in_root.iter().take(10).map(|p| p.strip_prefix(&root).unwrap_or(p).display().to_string()).collect::<Vec<_>>(),
+            if other_runs > 0 {
+                format!(" (not counting {other_runs} files of another copy of Unweb running now)")
+            } else {
+                String::new()
+            },
             if elsewhere.is_empty() {
                 "none".to_string()
             } else {

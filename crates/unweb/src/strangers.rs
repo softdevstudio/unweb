@@ -90,6 +90,24 @@ impl Strangers {
         &self.base
     }
 
+    /// True when `path` (anything under the strangers folder) belongs to
+    /// another copy of Unweb that is running now, whose lock is held.
+    pub fn belongs_to_other_live_run(&self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.base) else {
+            return false;
+        };
+        let Some(first) = rel.components().next() else {
+            return false;
+        };
+        let name = first.as_os_str().to_string_lossy();
+        let run = name
+            .strip_suffix(".lock.new")
+            .or_else(|| name.strip_suffix(".lock"))
+            .unwrap_or(&name);
+        let lock = self.base.join(format!("{run}.lock"));
+        run.starts_with("run-") && lock != self.lock_path && lock.exists() && !lock_is_free(&lock)
+    }
+
     /// This run's lock file.
     pub fn lock_path(&self) -> &Path {
         &self.lock_path
@@ -550,6 +568,21 @@ mod tests {
         assert!(first.root().join("stranger-1-x/cookies").exists());
         first.wipe_all();
         assert!(!base.exists());
+    }
+
+    #[test]
+    fn another_live_copy_is_recognised() {
+        let base = temp("liveother");
+        let first = Strangers::new(base.clone());
+        let second = Strangers::new(base.clone());
+        std::fs::create_dir_all(second.root().join("stranger-1-x")).unwrap();
+        assert!(first.belongs_to_other_live_run(second.lock_path()));
+        assert!(first.belongs_to_other_live_run(&second.root().join("stranger-1-x")));
+        assert!(!first.belongs_to_other_live_run(first.lock_path()));
+        second.wipe_all();
+        drop(second);
+        assert!(!first.belongs_to_other_live_run(&base.join("run-gone.lock")));
+        first.wipe_all();
     }
 
     #[test]
