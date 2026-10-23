@@ -36,4 +36,8 @@ webview2-com = "0.39"
 windows-core = "0.62"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "WKWebView", "WKNavigation"] }
+objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKNavigation", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+# Clearing a closing stranger's store and waiting until WebKit is done.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString"] }
+block2 = "0.6"

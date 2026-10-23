@@ -171,8 +171,7 @@ impl Strangers {
             if let Ok(blank) = Url::parse("about:blank") {
                 let _ = page.navigate(blank);
             }
-            let _ = page.clear_all_browsing_data();
-            std::thread::sleep(Duration::from_millis(1500));
+            clear_store(&page);
         }
         if let Some(w) = app.get_window(label) {
             let _ = w.destroy();
@@ -374,6 +373,31 @@ fn clear_engine_data(w: &tauri::Webview) -> bool {
         }
     });
     asked.is_ok() && rx.recv_timeout(Duration::from_secs(10)).unwrap_or(false)
+}
+
+/// Asks WKWebView to remove everything in this stranger's store (which
+/// also ends its service workers) and waits (up to ten seconds) until
+/// WebKit says it is done.
+#[cfg(target_os = "macos")]
+fn clear_store(page: &tauri::Webview) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let asked = page.with_webview(move |pv| unsafe {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let ptr = pv.inner() as *const objc2_web_kit::WKWebView;
+        let Some(wv) = ptr.as_ref() else {
+            return;
+        };
+        let store = wv.configuration().websiteDataStore();
+        let types = objc2_web_kit::WKWebsiteDataStore::allWebsiteDataTypes(mtm);
+        let since = objc2_foundation::NSDate::dateWithTimeIntervalSince1970(0.0);
+        let done = block2::RcBlock::new(move || {
+            let _ = tx.send(());
+        });
+        store.removeDataOfTypes_modifiedSince_completionHandler(&types, &since, &done);
+    });
+    asked.is_ok() && rx.recv_timeout(Duration::from_secs(10)).is_ok()
 }
 
 /// A fingerprint of everything in `dir`: each file's path, size and time.
