@@ -73,7 +73,7 @@ cargo build --release
 - `scripts/record-results.sh`: runs every check and records the results.
 - `scripts/third-party-licenses.py`: regenerates THIRD_PARTY_LICENSES.md.
 
-Unweb is a sister project of [Watchkeeper](https://github.com/softdevstudio/watchkeeper), whose detection code it will reuse for its cookie counter.
+Unweb's cookie counter (planned for 0.2) starts from a copy of the detection code in [Watchkeeper](https://github.com/softdevstudio/watchkeeper), Apache 2.0; from there it is Unweb's own code.
 
 ## License
 

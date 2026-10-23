@@ -9,7 +9,7 @@ Language: Rust, Tauri 2
 Code license: Apache 2.0
 Contact: info@unweb.org
 
-Family: Watchkeeper (watchkeeper.net, softdevstudio/watchkeeper) is the sister browser that shows who's watching. Unweb reuses its core crate (watchkeeper-core: detection script, site reports) for the cookie counter in 0.2. The plan says the core moves into its own repository before Unweb uses it; that needs a repository from YK and is raised with him before 0.2. Watchkeeper Plus is a later AI-driven browser, not started.
+Origin: YK decided on October 23, 2026 that Unweb copies Watchkeeper's core crate (softdevstudio/watchkeeper, crates/watchkeeper-core) into this repository once, as a starter for the cookie counter in 0.2, and edits and builds on it here. After that copy the two are separate, unrelated projects: no shared code, no syncing of fixes, no dependency on the Watchkeeper repository.
 
 ## Low maintenance workflow
 
@@ -17,7 +17,7 @@ YK supplies the go-ahead, language choice, repositories and access. The agent ha
 
 Work on main only; main is the default branch. This CLAUDE.md is the sole plan and session handoff file. Do not create ROADMAP.md, RESUME.md or another status file. Session notes go in Where we are, never as files in docs/; docs/ holds reference material only. Pause and report after each session and wait for YK's go-ahead before the next.
 
-README.md is the manual and plain-language explainer. Reference documentation belongs in docs/ as Markdown. No Word or PDF. Keep LICENSE, NOTICE and THIRD_PARTY_LICENSES.md current (regenerate the last with scripts/third-party-licenses.py when dependencies change). Unweb is a separate project: never mix in code, names or content from unrelated projects (Watchkeeper's core is shared by design). Do not discuss domain sale or domain value anywhere in project materials.
+README.md is the manual and plain-language explainer. Reference documentation belongs in docs/ as Markdown. No Word or PDF. Keep LICENSE, NOTICE and THIRD_PARTY_LICENSES.md current (regenerate the last with scripts/third-party-licenses.py when dependencies change). Unweb is a separate project: never mix in code, names or content from unrelated projects (the one-time starter copy of Watchkeeper's core is the exception, and is Unweb's own code from then on). Do not discuss domain sale or domain value anywhere in project materials.
 
 Write in plain words with varied sentence length. Avoid em dashes, formulaic contrasts, decorative vocabulary and forced lists of three.
 
@@ -65,7 +65,7 @@ Agreed with YK on October 23, 2026 (his plan text, sent the same day); YK approv
 
 1. Foundation and isolation prototype: repository, license files, CI on three OSes, one throwaway store per stranger, wiped on close and checked, and a self-test proving nothing carries over on all three engines.
 2. Version 0.1: strangers in separate windows, each fully isolated and wiped on close; address bar, back, forward and reload; the harder carry-over cases (HSTS, cache-based tracking, service workers left behind, the normal browser, leftover files on Windows); release workflow and installers.
-3. Version 0.2: a side-by-side grid of 2 to 4 strangers with one shared address bar that sends the same address to all; a language setting per stranger where the engine allows it; the cookie counter from Watchkeeper's detection ("this stranger was given 18 cookies by this site").
+3. Version 0.2: a side-by-side grid of 2 to 4 strangers with one shared address bar that sends the same address to all; a language setting per stranger where the engine allows it; a cookie counter, built on the starter copy of Watchkeeper's core ("this stranger was given 18 cookies by this site").
 4. Version 0.3: a different location per stranger through a proxy the user supplies; saved session setups; a screenshot strip comparing all strangers.
 5. Site: unweb.org on the Launch template, numbers from recorded results.
 
