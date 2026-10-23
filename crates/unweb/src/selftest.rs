@@ -447,7 +447,28 @@ fn requests_of(server: &Server, who: &str) -> (Vec<Hit>, Vec<Hit>) {
 fn clean_stranger(name: &'static str, site: &Server, who: &str) -> Check {
     let report = site.report("check", who);
     let (mine, cached) = requests_of(site, who);
-    let carried_cookie = mine.iter().any(|h| h.cookie.contains("unweb_"));
+    // Requests that are certainly this stranger's carry its name; another
+    // stranger's background requests (a service worker's update check, say)
+    // can fall in the same window of time.
+    let carried_cookie = mine.iter().any(|h| {
+        h.cookie.contains("unweb_")
+            && parse_query(&h.query).get("who").map(String::as_str) == Some(who)
+    });
+    let seen: Vec<String> = mine
+        .iter()
+        .map(|h| {
+            format!(
+                "{}{}{}",
+                h.path,
+                if h.cookie.contains("unweb_") {
+                    "+cookie"
+                } else {
+                    ""
+                },
+                if h.revalidate { "+revalidate" } else { "" }
+            )
+        })
+        .collect();
     let fresh_fetch = cached.len() == 1 && !cached[0].revalidate;
     let found: Vec<&str> = report
         .as_ref()
@@ -470,9 +491,10 @@ fn clean_stranger(name: &'static str, site: &Server, who: &str) -> Check {
         name,
         report.is_some() && found.is_empty() && !frame_found && !carried_cookie && fresh_fetch,
         format!(
-            "page found [{}] (none expected): {}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}",
+            "page found [{}] (none expected): {}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}; requests meanwhile: {}",
             found.join(" "),
-            report.as_ref().map(describe).unwrap_or_else(|| "no report".into())
+            report.as_ref().map(describe).unwrap_or_else(|| "no report".into()),
+            seen.join(" ")
         ),
     )
 }
@@ -542,6 +564,21 @@ fn run(
         .iter()
         .any(|h| h.path == "/check" && h.cookie.contains("unweb_http"));
     let a_cache_used = a_cached.is_empty() || a_cached.iter().all(|h| h.revalidate);
+    let a_seen: Vec<String> = a_mine
+        .iter()
+        .map(|h| {
+            format!(
+                "{}{}{}",
+                h.path,
+                if h.cookie.contains("unweb_") {
+                    "+cookie"
+                } else {
+                    ""
+                },
+                if h.revalidate { "+revalidate" } else { "" }
+            )
+        })
+        .collect();
     let a_found: Vec<&str> = TRACES
         .iter()
         .copied()
@@ -551,14 +588,15 @@ fn run(
         "stranger A finds its own traces (control)",
         a_checked && a_found.len() == TRACES.len() && a_cookie && a_cache_used,
         format!(
-            "A found [{}]; A sent its server cookie: {a_cookie}; the cached file came from A's cache: {a_cache_used}; frame: cookie {} storage {}{}",
+            "A found [{}]; A sent its server cookie: {a_cookie}; the cached file came from A's cache: {a_cache_used}; frame: cookie {} storage {}{}; requests: {}",
             a_found.join(" "),
             a_report.get("frame_cookie").cloned().unwrap_or_default(),
             a_report.get("frame_ls").cloned().unwrap_or_default(),
             folder_a
                 .as_ref()
                 .map(|_| format!("; {a_files} files in A's own folder"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            a_seen.join(" ")
         ),
     ));
 
