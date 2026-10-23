@@ -1122,7 +1122,7 @@ fn hsts_probe(
     h: &crate::hsts::Hsts,
     window: &str,
     who: &str,
-) -> Vec<crate::hsts::Seen> {
+) -> (Vec<crate::hsts::Seen>, String) {
     use crate::hsts::Seen;
     let n = h.seen().len();
     navigate(app, window, &h.plain_url(&format!("/probe?who={who}")));
@@ -1133,7 +1133,7 @@ fn hsts_probe(
             .any(|x| *x == Seen::Upgraded || matches!(x, Seen::Plain(p) if p.contains(&tag)))
     });
     std::thread::sleep(Duration::from_millis(1500));
-    h.seen()[n..].to_vec()
+    (h.seen()[n..].to_vec(), page_address(app, window))
 }
 
 fn sw_pings(site: &Server, who: &str) -> usize {
@@ -1257,7 +1257,8 @@ fn run(
 
     // HSTS: A learns it from the HTTPS server, and a plain visit from A is
     // then upgraded (the control); B and C must visit plainly.
-    let mut hsts_a: Option<(bool, Vec<Seen>)> = None;
+    type Probe = (Vec<Seen>, String);
+    let mut hsts_a: Option<(bool, String, Probe)> = None;
     if let Some(h) = hsts {
         navigate(app, la, &h.https_url("/learn?who=A"));
         let learned = wait_until(Instant::now() + Duration::from_secs(10), || {
@@ -1266,7 +1267,8 @@ fn run(
                 .any(|x| matches!(x, Seen::Https(p) if p.contains("who=A")))
         });
         std::thread::sleep(Duration::from_millis(500));
-        hsts_a = Some((learned, hsts_probe(app, h, la, "A")));
+        let learned_at = page_address(app, la);
+        hsts_a = Some((learned, learned_at, hsts_probe(app, h, la, "A")));
         // Back to a page that keeps A's service worker awake.
         navigate(app, la, &format!("{site_url}/check?who=A2"));
         wait_until(Instant::now() + Duration::from_secs(10), || {
@@ -1371,10 +1373,10 @@ fn run(
     checks.extend(bar_checks(app, strangers, site, site_url, &lc));
     let hsts_c = hsts.map(|h| hsts_probe(app, h, &lc, "C"));
     checks.push(match (servers.hsts, &hsts_a) {
-        (Some(Ok(_)), Some((learned, a))) => {
+        (Some(Ok(_)), Some((learned, learned_at, (a, a_at)))) => {
             let a_up = a.contains(&Seen::Upgraded);
-            let plain = |v: &Option<Vec<Seen>>, who: &str| {
-                v.as_ref().is_some_and(|v| {
+            let plain = |v: &Option<Probe>, who: &str| {
+                v.as_ref().map(|x| &x.0).is_some_and(|v| {
                     !v.contains(&Seen::Upgraded)
                         && v.iter().any(|x| matches!(x, Seen::Plain(p) if p.contains(&format!("who={who}"))))
                 })
@@ -1384,9 +1386,11 @@ fn run(
                 "HSTS learned by one stranger doesn't reach another",
                 *learned && a_up && b_plain && c_plain,
                 format!(
-                    "A got the HSTS header over HTTPS: {learned}; A's next plain visit was upgraded (control): {a_up}; B visited plainly: {b_plain}; C (opened after A closed) visited plainly: {c_plain}; seen: A {a:?}, B {:?}, C {:?}",
-                    hsts_b.unwrap_or_default(),
-                    hsts_c.unwrap_or_default()
+                    "A got the HSTS header over HTTPS: {learned}; A's next plain visit was upgraded (control): {a_up}; B visited plainly: {b_plain}; C (opened after A closed) visited plainly: {c_plain}; seen: A {a:?}, B {:?}, C {:?}; pages ended at: A after HTTPS {learned_at}, A after plain {a_at}, B {}, C {}",
+                    hsts_b.as_ref().map(|x| x.0.clone()).unwrap_or_default(),
+                    hsts_c.as_ref().map(|x| x.0.clone()).unwrap_or_default(),
+                    hsts_b.as_ref().map(|x| x.1.as_str()).unwrap_or(""),
+                    hsts_c.as_ref().map(|x| x.1.as_str()).unwrap_or("")
                 ),
             )
         }
