@@ -128,6 +128,7 @@ jobs:
       - name: Self-test the installed builds
         run: |
           set -euo pipefail
+          exec > >(tee -a "$RUNNER_TEMP/selftest.log") 2>&1
           b=target/release/bundle
           selftest() { # name, program and arguments
             local out="$PWD/st-$1"; shift
@@ -169,6 +170,15 @@ jobs:
               selftest msi "$exe"
               ;;
           esac
+      # Job logs aren't always at hand; the annotations carry the lines.
+      - name: Report the self-test
+        if: always()
+        run: |
+          f="$RUNNER_TEMP/selftest.log"
+          [ -f "$f" ] || exit 0
+          body=$(grep -E '^(PASS|FAIL|SKIP|engine:|selftest|Traceback|AssertionError|hdiutil|cp:|ls:|msiexec)' "$f" | tail -n 60 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          [ -n "$body" ] || body=$(tail -n 30 "$f" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::notice title=self-test (${{ matrix.name }})::$body"
       - name: Collect installers
         run: |
           set -euo pipefail
