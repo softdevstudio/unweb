@@ -137,7 +137,12 @@ jobs:
             if [ "${{ runner.os }}" = Linux ]; then
               timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$@" --selftest "$out"
             else
-              timeout 300 "$@" --selftest "$out"
+              # macOS has no timeout command; the step's own time limit holds.
+              if command -v timeout >/dev/null; then
+                timeout 300 "$@" --selftest "$out"
+              else
+                "$@" --selftest "$out"
+              fi
             fi
             python3 - "$out/selftest.json" <<'EOF'
           import json, sys
