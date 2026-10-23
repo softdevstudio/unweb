@@ -1,0 +1,169 @@
+{
+  "os": "linux",
+  "arch": "x86_64",
+  "user_agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15",
+  "folders": true,
+  "passed": true,
+  "checks": [
+    {
+      "name": "stranger A leaves every kind of trace",
+      "pass": true,
+      "detail": "A's page reported {\"cacheapi\": \"1\", \"cachedjs\": \"1\", \"cookie\": \"1\", \"frame\": \"0\", \"idb\": \"1\", \"ls\": \"1\", \"step\": \"set\", \"sw\": \"1\", \"who\": \"A\"}; the other site's frame loaded: true"
+    },
+    {
+      "name": "stranger A finds its own traces (control)",
+      "pass": true,
+      "detail": "A found [cookie ls idb cacheapi sw]; A sent its server cookie: true; the cached file came from A's cache: true; frame: cookie 0 storage 1; 25 files in A's own folder"
+    },
+    {
+      "name": "a stranger open at the same time finds nothing",
+      "pass": true,
+      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0; its requests carried an earlier cookie: false; the cached file was fetched afresh: true"
+    },
+    {
+      "name": "a closed stranger's data is deleted",
+      "pass": true,
+      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/stranger-1-5cec632b6542cb55) after 16.3s"
+    },
+    {
+      "name": "a new stranger after one closed finds nothing",
+      "pass": true,
+      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0; its requests carried an earlier cookie: false; the cached file was fetched afresh: true"
+    },
+    {
+      "name": "nothing is left on disk",
+      "pass": true,
+      "detail": "3 strangers wiped (stranger-1 gone, stranger-2 gone, stranger-3 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none"
+    }
+  ],
+  "site_hits": [
+    {
+      "path": "/set",
+      "query": "who=A",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/cached.js",
+      "query": "",
+      "cookie": "unweb_http=1",
+      "revalidate": false
+    },
+    {
+      "path": "/sw.js",
+      "query": "",
+      "cookie": "unweb_http=1; unweb_js=1",
+      "revalidate": false
+    },
+    {
+      "path": "/report",
+      "query": "step=set&who=A&cookie=1&ls=1&idb=1&cacheapi=1&sw=1&cachedjs=1&frame=0",
+      "cookie": "unweb_http=1; unweb_js=1",
+      "revalidate": false
+    },
+    {
+      "path": "/check",
+      "query": "who=A",
+      "cookie": "unweb_http=1; unweb_js=1",
+      "revalidate": false
+    },
+    {
+      "path": "/report",
+      "query": "step=check&who=A&cookie=1&ls=1&idb=1&cacheapi=1&sw=1&frame_cookie=0&frame_ls=1",
+      "cookie": "unweb_http=1; unweb_js=1",
+      "revalidate": false
+    },
+    {
+      "path": "/check",
+      "query": "who=B",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/cached.js",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/report",
+      "query": "step=check&who=B&cookie=0&ls=0&idb=0&cacheapi=0&sw=0&frame_cookie=0&frame_ls=0",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/sw.js",
+      "query": "",
+      "cookie": "unweb_http=1; unweb_js=1",
+      "revalidate": false
+    },
+    {
+      "path": "/check",
+      "query": "who=C",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/cached.js",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/report",
+      "query": "step=check&who=C&cookie=0&ls=0&idb=0&cacheapi=0&sw=0&frame_cookie=0&frame_ls=0",
+      "cookie": "",
+      "revalidate": false
+    }
+  ],
+  "other_hits": [
+    {
+      "path": "/frame-set",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/frame-check",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/frame-check",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    },
+    {
+      "path": "/frame-check",
+      "query": "",
+      "cookie": "",
+      "revalidate": false
+    }
+  ],
+  "wipes": [
+    {
+      "label": "stranger-1",
+      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-1-5cec632b6542cb55",
+      "gone": true,
+      "seconds": 16.312097944,
+      "detail": "deleted once the engine stopped writing, and still gone 10s later"
+    },
+    {
+      "label": "stranger-2",
+      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-2-c87c2b096dfe9ce5",
+      "gone": true,
+      "seconds": 14.344373924,
+      "detail": "deleted once the engine stopped writing, and still gone 10s later"
+    },
+    {
+      "label": "stranger-3",
+      "folder": "/root/.local/share/org.unweb.app/strangers/stranger-3-c20d9232fb8e4187",
+      "gone": true,
+      "seconds": 16.08387435,
+      "detail": "deleted, written again by the engine and deleted again (2 times), then gone for 10s"
+    }
+  ],
+  "seconds": 50.462633248
+}

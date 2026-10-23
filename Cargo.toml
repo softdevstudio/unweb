@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/unweb"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/softdevstudio/unweb"
+rust-version = "1.90"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
