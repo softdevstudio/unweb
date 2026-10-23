@@ -127,6 +127,7 @@ jobs:
       # the installed .deb, the AppImage, the app copied from the .dmg and
       # the program installed by the .msi.
       - name: Self-test the installed builds
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           exec > >(tee -a "$RUNNER_TEMP/selftest.log") 2>&1
@@ -136,7 +137,7 @@ jobs:
             if [ "${{ runner.os }}" = Linux ]; then
               timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$@" --selftest "$out"
             else
-              "$@" --selftest "$out"
+              timeout 300 "$@" --selftest "$out"
             fi
             python3 - "$out/selftest.json" <<'EOF'
           import json, sys
@@ -164,11 +165,14 @@ jobs:
               yes | hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/unweb-dmg" "$(ls $b/dmg/*.dmg | head -n1)" > /dev/null
               cp -R "$RUNNER_TEMP/unweb-dmg/Unweb.app" /Applications/
               hdiutil detach "$RUNNER_TEMP/unweb-dmg"
-              selftest dmg /Applications/Unweb.app/Contents/MacOS/unweb
+              ls /Applications/Unweb.app/Contents/MacOS/
+              selftest dmg "$(ls /Applications/Unweb.app/Contents/MacOS/* | head -n1)"
               ;;
             Windows)
               msi="$(cygpath -w "$(ls $b/msi/*.msi | head -n1)")"
-              msiexec //i "$msi" //qn //l*v msi.log
+              # Start-Process -Wait: msiexec returns at once when run from bash.
+              powershell -NoProfile -Command "\$p = Start-Process msiexec -ArgumentList '/i', '$msi', '/qn', '/norestart' -Wait -PassThru; exit \$p.ExitCode"
+              ls "/c/Program Files/Unweb/"
               exe="$(ls "/c/Program Files/Unweb/"*.exe | head -n1)"
               selftest msi "$exe"
               ;;
@@ -179,8 +183,7 @@ jobs:
         run: |
           f="$RUNNER_TEMP/selftest.log"
           [ -f "$f" ] || exit 0
-          body=$(grep -E '^(PASS|FAIL|SKIP|engine:|selftest|Traceback|AssertionError|hdiutil|cp:|ls:|msiexec)' "$f" | tail -n 60 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
-          [ -n "$body" ] || body=$(tail -n 30 "$f" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          body=$( { grep -E '^(PASS|FAIL|SKIP|engine:|selftest)' "$f" || true; echo "-- last lines:"; tail -n 25 "$f"; } | tail -n 70 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' || true)
           echo "::notice title=self-test (${{ matrix.name }})::$body"
       - name: Collect installers
         run: |
