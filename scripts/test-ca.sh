@@ -24,21 +24,41 @@ cd "$dir"
 # -subj needs them as they are.
 export MSYS_NO_PATHCONV=1
 
-openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
-  -keyout ca.key -out ca.pem -subj "/CN=Unweb self-test CA" \
-  -addext "basicConstraints=critical,CA:TRUE" \
-  -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
-
-openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr \
-  -subj "/CN=$host" 2>/dev/null
-cat > leaf.ext <<EOF
-basicConstraints=CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth
-subjectAltName=DNS:$host
-EOF
+# Everything comes from these config files, so no system's openssl adds
+# default extensions of its own (a duplicate critical extension makes
+# macOS reject the certificate).
+cat > ca.cnf <<CNF
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = ca_ext
+[dn]
+CN = Unweb self-test CA
+[ca_ext]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+CNF
+cat > leaf.cnf <<CNF
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = $host
+[leaf_ext]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:$host
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
+CNF
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -sha256 \
+  -keyout ca.key -out ca.pem -config ca.cnf 2>/dev/null
+openssl req -new -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr \
+  -config leaf.cnf 2>/dev/null
 openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-  -days 30 -out leaf.pem -extfile leaf.ext 2>/dev/null
+  -days 30 -sha256 -out leaf.pem -extfile leaf.cnf -extensions leaf_ext 2>/dev/null
 # The server sends the leaf and the authority that signed it.
 cat leaf.pem ca.pem > chain.pem
 
@@ -67,5 +87,5 @@ case "$(uname -s)" in
     grep -q " $host" "$hosts" || printf '\r\n127.0.0.1 %s\r\n' "$host" >> "$hosts"
     ;;
 esac
-rm -f ca.key leaf.csr leaf.ext ca.srl
+rm -f ca.key leaf.csr ca.cnf leaf.cnf ca.srl
 echo "test certificate for $host ready in $dir"
