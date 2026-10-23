@@ -942,10 +942,12 @@ fn normal_browser_roots() -> Vec<PathBuf> {
         named_unweb(home.join(".local/share"), &mut roots);
         named_unweb(home.join(".cache"), &mut roots);
     } else if cfg!(target_os = "macos") {
+        // Safari's web data. (Library/Safari itself holds files that system
+        // services open while Safari isn't running, so it isn't watched.)
         for d in [
-            "Library/Safari",
             "Library/Cookies",
             "Library/WebKit/com.apple.Safari",
+            "Library/Containers/com.apple.Safari/Data/Library/Cookies",
         ] {
             roots.push(home.join(d));
         }
