@@ -6,6 +6,7 @@
 //! cookies, keeps everything it collects in a throwaway store of its own,
 //! and when it closes that store is deleted. See strangers.rs.
 
+mod hsts;
 #[cfg(target_os = "linux")]
 mod linux_layout;
 mod nav;

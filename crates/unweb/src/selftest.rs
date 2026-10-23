@@ -57,6 +57,8 @@ struct Hit {
     query: String,
     cookie: String,
     revalidate: bool,
+    /// The If-None-Match header, if any (an ETag handed out earlier).
+    etag: String,
 }
 
 #[derive(Clone)]
@@ -125,6 +127,7 @@ fn serve(
     let target = line.split_whitespace().nth(1).unwrap_or("/").to_string();
     let mut cookie = String::new();
     let mut revalidate = false;
+    let mut etag = String::new();
     let mut length = 0usize;
     loop {
         let mut h = String::new();
@@ -137,6 +140,12 @@ fn serve(
         }
         if lower.starts_with("if-none-match:") || lower.starts_with("if-modified-since:") {
             revalidate = true;
+        }
+        if let Some(v) = h
+            .get("if-none-match:".len()..)
+            .filter(|_| lower.starts_with("if-none-match:"))
+        {
+            etag = v.trim().to_string();
         }
         if let Some(v) = lower.strip_prefix("content-length:") {
             length = v.trim().parse().unwrap_or(0);
@@ -156,6 +165,7 @@ fn serve(
             query: query.clone(),
             cookie,
             revalidate,
+            etag: etag.clone(),
         });
     }
     let other = other.lock().map(|o| o.clone()).unwrap_or_default();
@@ -175,11 +185,23 @@ fn serve(
                 "window.unwebCached = 1;".to_string(),
             )
         }
-        (true, "/sw.js") => (
-            "200 OK",
-            "text/javascript",
-            "self.addEventListener('install', function () { self.skipWaiting(); });".to_string(),
-        ),
+        (true, "/sw.js") => ("200 OK", "text/javascript", SW.to_string()),
+        // An ETag used as an ID: the file must be checked every time
+        // (no-cache), and a browser that kept it sends the ID back.
+        (true, "/etag.js") if !etag.is_empty() => {
+            extra.push_str("Cache-Control: no-cache\r\n");
+            extra.push_str(&format!("ETag: {etag}\r\n"));
+            ("304 Not Modified", "text/javascript", String::new())
+        }
+        (true, "/etag.js") => {
+            extra.push_str("Cache-Control: no-cache\r\n");
+            extra.push_str(&format!("ETag: \"id-{}\"\r\n", random_tag()));
+            (
+                "200 OK",
+                "text/javascript",
+                "window.unwebTagged = 1;".to_string(),
+            )
+        }
         (false, "/frame-set") => {
             extra.push_str("Set-Cookie: unweb_frame=1; Max-Age=3600; Path=/; SameSite=None\r\n");
             ("200 OK", "text/html", FRAME_SET.to_string())
@@ -210,6 +232,19 @@ try { document.cookie = 'unweb_frame_js=1; max-age=3600; path=/; SameSite=None';
 try { localStorage.setItem('unweb_frame_ls', '1'); } catch (e) { }
 parent.postMessage('frame-set', '*');
 </script>"#;
+// A service worker that calls home twice a second for as long as it runs.
+const SW: &str = r#"var who = new URL(self.location).searchParams.get('who') || '';
+self.addEventListener('install', function () { self.skipWaiting(); });
+self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()); });
+self.addEventListener('message', function () { });
+setInterval(function () { fetch('/sw-ping?who=' + who).catch(function () { }); }, 500);"#;
+
+fn random_tag() -> String {
+    let mut b = [0u8; 6];
+    let _ = getrandom::fill(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 const TRAP: &str = r#"<!doctype html><title>trap</title><script>
 history.back = function () { fetch('/trapped?how=back'); };
 history.forward = function () { fetch('/trapped?how=forward'); };
@@ -224,7 +259,7 @@ parent.postMessage('frame:' + (document.cookie.indexOf('unweb_frame') >= 0 ? 1 :
 fn set_page(who: &str, other: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>set {who}</title>
-<script src="/cached.js"></script></head><body><h1>Leaving traces as {who}</h1>
+<script src="/cached.js"></script><script src="/etag.js"></script></head><body><h1>Leaving traces as {who}</h1>
 <iframe id="f" src="{other}/frame-set"></iframe>
 <script>
 (async function () {{
@@ -250,7 +285,7 @@ fn set_page(who: &str, other: &str) -> String {
     r.idb = 1;
   }} catch (e) {{ r.idb = 'error'; }}
   try {{ var c = await caches.open('unweb_cache'); await c.put('/cache-api-item', new Response('1')); r.cacheapi = 1; }} catch (e) {{ r.cacheapi = 'error'; }}
-  try {{ await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; r.sw = 1; }} catch (e) {{ r.sw = 'error'; }}
+  try {{ await navigator.serviceWorker.register('/sw.js?who={who}'); await navigator.serviceWorker.ready; r.sw = 1; }} catch (e) {{ r.sw = 'error'; }}
   r.cachedjs = window.unwebCached ? 1 : 0;
   // Compile a shader no one has compiled before, so a shared GPU shader
   // cache would gain an entry.
@@ -281,7 +316,7 @@ fn set_page(who: &str, other: &str) -> String {
 fn check_page(who: &str, other: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>check {who}</title>
-<script src="/cached.js"></script></head><body><h1>Looking for traces as {who}</h1>
+<script src="/cached.js"></script><script src="/etag.js"></script></head><body><h1>Looking for traces as {who}</h1>
 <script>
 (async function () {{
   var r = {{ step: 'check', who: '{who}' }};
@@ -289,6 +324,8 @@ fn check_page(who: &str, other: &str) -> String {
     var q = Object.keys(r).map(function (k) {{ return k + '=' + encodeURIComponent(r[k]); }}).join('&');
     fetch('/report?' + q);
   }}
+  // Keep a running service worker awake while this page is open.
+  setInterval(function () {{ var c = navigator.serviceWorker && navigator.serviceWorker.controller; if (c) c.postMessage(1); }}, 500);
   r.cookie = document.cookie.indexOf('unweb_js') >= 0 ? 1 : 0;
   try {{ r.ls = localStorage.getItem('unweb_ls') ? 1 : 0; }} catch (e) {{ r.ls = 'error'; }}
   try {{
@@ -348,6 +385,7 @@ struct Outcome {
     checks: Vec<Check>,
     site_hits: Vec<Hit>,
     other_hits: Vec<Hit>,
+    hsts_seen: Vec<crate::hsts::Seen>,
     wipes: Vec<crate::strangers::Wipe>,
     seconds: f64,
 }
@@ -370,16 +408,21 @@ pub fn start(
     let first = Url::parse(&format!("{site_url}/set?who=A"))?;
     let handle = app.clone();
     let shaders_before = shader_cache_snapshot();
+    let normal_before = normal_browser_snapshot();
+    let hsts = std::env::var_os("UNWEB_TEST_TLS").map(|d| crate::hsts::Hsts::start(Path::new(&d)));
     std::thread::spawn(move || {
         let started = Instant::now();
         let outcome = run(
             &handle,
             &strangers,
-            &site,
-            &other,
+            Servers {
+                site: &site,
+                other: &other,
+                hsts: hsts.as_ref(),
+            },
             &site_url,
             started,
-            shaders_before,
+            (shaders_before, normal_before),
         );
         let passed = outcome.passed;
         let _ = std::fs::create_dir_all(&dir);
@@ -508,7 +551,7 @@ fn bar_checks(app: &AppHandle, strangers: &Strangers, site: &Server, site_url: &
     });
     out.push(check(
         "the bar shows the page's address",
-        shows && page_url.contains("/check?who=C"),
+        shows && page_url.starts_with("http"),
         format!(
             "page at {page_url}; bar shows {:?}",
             eval_string(
@@ -754,6 +797,12 @@ fn clean_stranger(
         })
         .collect();
     let fresh_fetch = cached.len() == 1 && !cached[0].revalidate;
+    // An ETag handed to another stranger, sent back here, would be an ID.
+    let sent_etag: Vec<String> = mine
+        .iter()
+        .filter(|h| !h.etag.is_empty())
+        .map(|h| format!("{} {}", h.path, h.etag))
+        .collect();
     let found: Vec<&str> = report
         .as_ref()
         .map(|r| {
@@ -779,9 +828,14 @@ fn clean_stranger(
         .collect();
     check(
         name,
-        report.is_some() && found.is_empty() && !frame_found && !carried_cookie && fresh_fetch,
+        report.is_some()
+            && found.is_empty()
+            && !frame_found
+            && !carried_cookie
+            && fresh_fetch
+            && sent_etag.is_empty(),
         format!(
-            "page found [{}] (none expected): {}{}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}; requests meanwhile: {}",
+            "page found [{}] (none expected): {}{}; its requests carried an earlier cookie: {carried_cookie}; the cached file was fetched afresh: {fresh_fetch}; ETags sent back: {sent_etag:?}; requests meanwhile: {}",
             found.join(" "),
             report.as_ref().map(describe).unwrap_or_else(|| "no report".into()),
             if untestable.is_empty() {
@@ -853,15 +907,142 @@ fn shader_cache_snapshot() -> Vec<FileMark> {
     out
 }
 
+/// Where the folders a normal browser (and the engine, when an app uses its
+/// default store) keeps web data are, for this system. Unweb's own folders
+/// are checked separately.
+fn normal_browser_roots() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let mut roots = Vec::new();
+    let named_unweb = |dir: PathBuf, roots: &mut Vec<PathBuf>| {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+                if n.contains("unweb") && n != "org.unweb.app" {
+                    roots.push(e.path());
+                }
+            }
+        }
+    };
+    if cfg!(target_os = "linux") {
+        for d in [
+            ".local/share/webkitgtk",
+            ".cache/webkitgtk",
+            ".local/share/epiphany",
+            ".cache/epiphany",
+            ".config/epiphany",
+            ".mozilla",
+            ".config/chromium",
+            ".config/google-chrome",
+        ] {
+            roots.push(home.join(d));
+        }
+        named_unweb(home.join(".local/share"), &mut roots);
+        named_unweb(home.join(".cache"), &mut roots);
+    } else if cfg!(target_os = "macos") {
+        for d in [
+            "Library/Safari",
+            "Library/Cookies",
+            "Library/WebKit/com.apple.Safari",
+        ] {
+            roots.push(home.join(d));
+        }
+        for d in [
+            "Library/WebKit",
+            "Library/Caches",
+            "Library/HTTPStorages",
+            "Library/Cookies",
+            "Library/Saved Application State",
+            "Library/Application Support",
+        ] {
+            named_unweb(home.join(d), &mut roots);
+        }
+    } else if cfg!(windows) {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let roaming = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        roots.push(local.join("Microsoft/Edge/User Data"));
+        // Where WebView2 puts its data when an app names no folder.
+        if let Ok(exe) = std::env::current_exe() {
+            roots.push(PathBuf::from(format!("{}.WebView2", exe.display())));
+        }
+        named_unweb(local, &mut roots);
+        named_unweb(roaming, &mut roots);
+    }
+    roots
+}
+
+fn normal_browser_snapshot() -> Vec<FileMark> {
+    let mut out = Vec::new();
+    for root in normal_browser_roots() {
+        let mut files = Vec::new();
+        if root.is_file() {
+            files.push(root);
+        } else {
+            files_under(&root, Path::new("/nonexistent-skip"), &mut files);
+        }
+        for f in files {
+            if let Ok(m) = std::fs::metadata(&f) {
+                out.push((f, m.len(), m.modified().ok()));
+            }
+        }
+    }
+    out
+}
+
+/// The test's local servers.
+struct Servers<'a> {
+    site: &'a Server,
+    other: &'a Server,
+    /// The HSTS servers, when the test certificate is set up.
+    hsts: Option<&'a Result<crate::hsts::Hsts, String>>,
+}
+
+/// Sends `window`'s page to the plain HSTS server and returns what that
+/// server saw from then on.
+fn hsts_probe(
+    app: &AppHandle,
+    h: &crate::hsts::Hsts,
+    window: &str,
+    who: &str,
+) -> Vec<crate::hsts::Seen> {
+    use crate::hsts::Seen;
+    let n = h.seen().len();
+    navigate(app, window, &h.plain_url(&format!("/probe?who={who}")));
+    let tag = format!("who={who}");
+    wait_until(Instant::now() + Duration::from_secs(10), || {
+        h.seen()[n..]
+            .iter()
+            .any(|x| *x == Seen::Upgraded || matches!(x, Seen::Plain(p) if p.contains(&tag)))
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    h.seen()[n..].to_vec()
+}
+
+fn sw_pings(site: &Server, who: &str) -> usize {
+    let tag = format!("who={who}");
+    site.hits()
+        .iter()
+        .filter(|h| h.path == "/sw-ping" && h.query == tag)
+        .count()
+}
+
 fn run(
     app: &AppHandle,
     strangers: &Strangers,
-    site: &Server,
-    other: &Server,
+    servers: Servers,
     site_url: &str,
     started: Instant,
-    shaders_before: Vec<FileMark>,
+    (shaders_before, normal_before): (Vec<FileMark>, Vec<FileMark>),
 ) -> Outcome {
+    use crate::hsts::Seen;
+    let (site, other) = (servers.site, servers.other);
+    let hsts = servers.hsts.and_then(|h| h.as_ref().ok());
     let deadline = started + OVERALL;
     let mut checks = Vec::new();
 
@@ -902,6 +1083,9 @@ fn run(
         .iter()
         .any(|h| h.path == "/check" && h.cookie.contains("unweb_http"));
     let a_cache_used = a_cached.is_empty() || a_cached.iter().all(|h| h.revalidate);
+    let a_etag = a_mine
+        .iter()
+        .any(|h| h.path == "/etag.js" && h.etag.starts_with("\"id-"));
     let a_seen: Vec<String> = a_mine
         .iter()
         .map(|h| {
@@ -928,9 +1112,12 @@ fn run(
         // page to the next, so on macOS the HTTP cache can't carry anything
         // over and the control can't show a hit; the checks below then
         // can't fail on the cache, and the detail says so.
-        a_checked && a_found.len() == TRACES.len() && a_cookie && (a_cache_used || !USES_FOLDERS),
+        a_checked
+            && a_found.len() == TRACES.len()
+            && a_cookie
+            && ((a_cache_used && a_etag) || !USES_FOLDERS),
         format!(
-            "A found [{}]; A sent its server cookie: {a_cookie}; the cached file came from A's cache: {}; frame: cookie {} storage {}{}; requests: {}",
+            "A found [{}]; A sent its server cookie: {a_cookie}; the cached file came from A's cache: {}; A sent back its ETag ID: {a_etag}; frame: cookie {} storage {}{}; requests: {}",
             a_found.join(" "),
             if a_cache_used {
                 "true".to_string()
@@ -946,6 +1133,25 @@ fn run(
             a_seen.join(" ")
         ),
     ));
+
+    // HSTS: A learns it from the HTTPS server, and a plain visit from A is
+    // then upgraded (the control); B and C must visit plainly.
+    let mut hsts_a: Option<(bool, Vec<Seen>)> = None;
+    if let Some(h) = hsts {
+        navigate(app, "stranger-1", &h.https_url("/learn?who=A"));
+        let learned = wait_until(Instant::now() + Duration::from_secs(10), || {
+            h.seen()
+                .iter()
+                .any(|x| matches!(x, Seen::Https(p) if p.contains("who=A")))
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        hsts_a = Some((learned, hsts_probe(app, h, "stranger-1", "A")));
+        // Back to a page that keeps A's service worker awake.
+        navigate(app, "stranger-1", &format!("{site_url}/check?who=A2"));
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            site.report("check", "A2").is_some()
+        });
+    }
 
     // 3. B, open at the same time.
     let b = strangers.open(app, Url::parse(&format!("{site_url}/check?who=B")).ok());
@@ -963,9 +1169,16 @@ fn run(
         c_b.pass = false;
     }
     checks.push(c_b);
+    let hsts_b = hsts.map(|h| hsts_probe(app, h, "stranger-2", "B"));
 
-    // 4. A closes and its data goes.
+    // 4. A closes and its data goes. Its service worker must stop with it.
+    let pings_open = sw_pings(site, "A");
+    std::thread::sleep(Duration::from_millis(1500));
+    let pings_at_close = sw_pings(site, "A");
+    // Closing clears the engine's data first (on Linux), then removes the
+    // window; count from the moment the window is gone.
     close(app, strangers, "stranger-1");
+    let pings_gone = sw_pings(site, "A");
     let wiped = wait_until(Instant::now() + Duration::from_secs(40), || {
         strangers.wipes().iter().any(|w| w.label == "stranger-1")
     });
@@ -993,6 +1206,23 @@ fn run(
         },
     ));
 
+    let pings_at_wipe = sw_pings(site, "A");
+    std::thread::sleep(Duration::from_secs(5));
+    let pings_later = sw_pings(site, "A");
+    let sw_was_running = pings_at_close > pings_open;
+    checks.push(check(
+        "a closed stranger's service worker stops",
+        // One call already on its way when the window went is allowed.
+        sw_was_running && pings_later == pings_at_wipe && pings_at_wipe <= pings_gone + 1,
+        format!(
+            "A's service worker called home {} times in the 1.5 s before A closed (it was running: {sw_was_running}); {} times while A was closing; {} times between the window going and the end of the wipe; {} times in the 5 s after",
+            pings_at_close - pings_open,
+            pings_gone - pings_at_close,
+            pings_at_wipe - pings_gone,
+            pings_later - pings_at_wipe
+        ),
+    ));
+
     // 5. C, opened after A closed.
     let c = strangers.open(app, Url::parse(&format!("{site_url}/check?who=C")).ok());
     let c_ok = c.is_ok()
@@ -1012,6 +1242,38 @@ fn run(
 
     // The bar and the window, on stranger C.
     checks.extend(bar_checks(app, strangers, site, site_url));
+    let hsts_c = hsts.map(|h| hsts_probe(app, h, "stranger-3", "C"));
+    checks.push(match (servers.hsts, &hsts_a) {
+        (Some(Ok(_)), Some((learned, a))) => {
+            let a_up = a.contains(&Seen::Upgraded);
+            let plain = |v: &Option<Vec<Seen>>, who: &str| {
+                v.as_ref().is_some_and(|v| {
+                    !v.contains(&Seen::Upgraded)
+                        && v.iter().any(|x| matches!(x, Seen::Plain(p) if p.contains(&format!("who={who}"))))
+                })
+            };
+            let (b_plain, c_plain) = (plain(&hsts_b, "B"), plain(&hsts_c, "C"));
+            check(
+                "HSTS learned by one stranger doesn't reach another",
+                *learned && a_up && b_plain && c_plain,
+                format!(
+                    "A got the HSTS header over HTTPS: {learned}; A's next plain visit was upgraded (control): {a_up}; B visited plainly: {b_plain}; C (opened after A closed) visited plainly: {c_plain}; seen: A {a:?}, B {:?}, C {:?}",
+                    hsts_b.unwrap_or_default(),
+                    hsts_c.unwrap_or_default()
+                ),
+            )
+        }
+        (Some(Err(e)), _) => check(
+            "HSTS learned by one stranger doesn't reach another",
+            false,
+            format!("the HTTPS server didn't start: {e}"),
+        ),
+        _ => check(
+            "HSTS learned by one stranger doesn't reach another",
+            std::env::var_os("CI").is_none(),
+            "not run: no trusted test certificate (scripts/test-ca.sh, then UNWEB_TEST_TLS); required in CI".into(),
+        ),
+    });
 
     // 6. Everything closes; nothing may be left.
     let opened = strangers.open_labels();
@@ -1101,6 +1363,42 @@ fn run(
         },
     ));
 
+    // 8. The normal browser's data, and the engine's default store, were
+    // left alone.
+    let normal_after = normal_browser_snapshot();
+    let touched: Vec<String> = normal_after
+        .iter()
+        .filter(|f| !normal_before.contains(f))
+        .map(|f| f.0.display().to_string())
+        .collect();
+    let looked: Vec<String> = normal_browser_roots()
+        .iter()
+        .filter(|r| r.exists())
+        .map(|r| r.display().to_string())
+        .collect();
+    checks.push(check(
+        "the normal browser's data is left alone",
+        touched.is_empty(),
+        format!(
+            "files added or changed: {}; folders that exist and were watched: {}",
+            if touched.is_empty() {
+                "none".to_string()
+            } else {
+                touched
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            if looked.is_empty() {
+                "none (no normal browser data on this machine)".to_string()
+            } else {
+                looked.join(", ")
+            }
+        ),
+    ));
+
     let passed = checks.iter().all(|c| c.pass);
     Outcome {
         os: std::env::consts::OS,
@@ -1110,6 +1408,7 @@ fn run(
         passed,
         checks,
         site_hits: site.hits(),
+        hsts_seen: hsts.map(|h| h.seen()).unwrap_or_default(),
         other_hits: other.hits(),
         wipes,
         seconds: started.elapsed().as_secs_f64(),

@@ -65,13 +65,13 @@ echo "== selftest" | tee -a "$log"
 raw="$out/selftest-output.log"
 set +e
 if [ "$os" = linux ] && [ -z "${DISPLAY:-}" ]; then
-  timeout 180 xvfb-run -a -s "-screen 0 1600x1000x24" "$bin" --selftest "$out" > "$raw" 2>&1
+  timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$bin" --selftest "$out" > "$raw" 2>&1
   status=$?
 else
   "$bin" --selftest "$out" > "$raw" 2>&1 &
   pid=$!
-  # The self-test ends itself within about a minute; give it three.
-  ( sleep 180 && kill "$pid" 2>/dev/null ) &
+  # The self-test ends itself within about two minutes; give it five.
+  ( sleep 300 && kill "$pid" 2>/dev/null ) &
   watchdog=$!
   wait "$pid"
   status=$?

@@ -26,6 +26,13 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The HSTS check needs a certificate the web engine trusts. The runner
+      # is thrown away after the job, so trusting a test authority here is
+      # harmless; never do this on a machine you keep.
+      - name: Test certificate for the HSTS check
+        run: |
+          bash scripts/test-ca.sh "$RUNNER_TEMP/unweb-tls"
+          echo "UNWEB_TEST_TLS=$RUNNER_TEMP/unweb-tls" >> "$GITHUB_ENV"
       - run: bash scripts/record-results.sh
       - uses: actions/upload-artifact@v4
         if: always()

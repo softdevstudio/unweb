@@ -72,14 +72,27 @@ pub fn build(
     let window = WindowBuilder::new(app, label)
         .title(format!("Unweb: stranger {n}"))
         .inner_size(WIDTH, HEIGHT)
-        .min_inner_size(420.0, 240.0)
-        .build()?;
+        .min_inner_size(420.0, 240.0);
+    // Tauri's default macOS style lets the content run under the title
+    // bar, which would hide most of the bar. This one keeps the content
+    // below it.
+    #[cfg(target_os = "macos")]
+    let window = window.title_bar_style(tauri::TitleBarStyle::Transparent);
+    let window = window.build()?;
 
+    let bar_app = app.clone();
+    let bar_window = label.to_string();
     let bar = store(
         WebviewBuilder::new(bar_label(label), WebviewUrl::App("bar.html".into())),
         folder,
     )
-    .disable_drag_drop_handler();
+    .disable_drag_drop_handler()
+    // The page can finish loading before the bar is ready to show it.
+    .on_page_load(move |_, payload| {
+        if payload.event() == PageLoadEvent::Finished {
+            show_address(&bar_app, &bar_window);
+        }
+    });
 
     let page_app = app.clone();
     let window_label = label.to_string();
