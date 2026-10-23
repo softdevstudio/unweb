@@ -1,0 +1,223 @@
+name: Release
+
+# Runs after CI finishes on main. When the workspace version in Cargo.toml
+# has no tag yet, it builds the installers for every platform, runs the
+# self-test with each release build on its own platform, then tags the
+# commit and publishes "Unweb vX.Y.Z". If any build or self-test
+# fails, nothing is published.
+#
+# Run it by hand with a tag to rebuild the files of an existing release.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to rebuild, such as v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      rebuild: ${{ steps.plan.outputs.rebuild }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml | head -n1)
+          if [ -z "$version" ]; then echo "no version in Cargo.toml" >&2; exit 1; fi
+          conf=$(python3 -c 'import json;print(json.load(open("crates/unweb/tauri.conf.json"))["version"])')
+          if [ "$conf" != "$version" ]; then
+            echo "tauri.conf.json version $conf does not match Cargo.toml $version" >&2; exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          release=false
+          rebuild=false
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "v$version" != "$TAG_INPUT" ]; then
+              echo "tag $TAG_INPUT does not match Cargo.toml version $version" >&2; exit 1
+            fi
+            release=true
+            rebuild=true
+          elif case "$version" in 0.0.*) true;; *) false;; esac; then
+            echo "version $version is pre-release development; nothing to release"
+          elif git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already tagged; nothing to release"
+          else
+            release=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "rebuild=$rebuild" >> "$GITHUB_OUTPUT"
+          echo "version $version at $sha: release=$release rebuild=$rebuild"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            bundles: deb,appimage
+          - os: macos-latest
+            name: macos-arm64
+            bundles: dmg
+          - os: macos-15-intel
+            name: macos-x86_64
+            bundles: dmg
+          - os: windows-latest
+            name: windows-x86_64
+            bundles: msi
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: Linux web engine and build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev xvfb file
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2.12.4
+      - name: Build installers
+        working-directory: crates/unweb
+        run: cargo tauri build --bundles ${{ matrix.bundles }} --ci
+      # The self-test's HSTS check needs a trusted test certificate; the
+      # runner is thrown away afterwards (see scripts/test-ca.sh).
+      - name: Test certificate for the HSTS check
+        run: |
+          bash scripts/test-ca.sh "$RUNNER_TEMP/unweb-tls"
+          echo "UNWEB_TEST_TLS=$RUNNER_TEMP/unweb-tls" >> "$GITHUB_ENV"
+      - name: Self-test the release build
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Windows) bin=target/release/unweb.exe ;;
+            *) bin=target/release/unweb ;;
+          esac
+          if [ "${{ runner.os }}" = Linux ]; then
+            timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$bin" --selftest st
+          else
+            "$bin" --selftest st
+          fi
+          python3 - <<'EOF'
+          import json
+          r = json.load(open("st/selftest.json"))
+          for c in r["checks"]:
+              print(("PASS" if c["pass"] else "FAIL"), c["name"] + ":", c["detail"])
+          print("engine:", r["user_agent"])
+          assert r["passed"], "self-test failed"
+          EOF
+      - name: Collect installers
+        run: |
+          set -euo pipefail
+          mkdir dist
+          b=target/release/bundle
+          n=${{ matrix.name }}
+          case "${{ runner.os }}" in
+            Linux)
+              cp "$(ls $b/deb/*.deb | head -n1)" "dist/unweb-$n.deb"
+              cp "$(ls $b/appimage/*.AppImage | head -n1)" "dist/Unweb-$n.AppImage"
+              ;;
+            macOS)
+              cp "$(ls $b/dmg/*.dmg | head -n1)" "dist/Unweb-$n.dmg"
+              ;;
+            Windows)
+              cp "$(ls $b/msi/*.msi | head -n1)" "dist/Unweb-$n.msi"
+              ;;
+          esac
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          REBUILD: ${{ needs.plan.outputs.rebuild }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if [ "$REBUILD" = true ]; then
+            gh release upload "$tag" dist/* --clobber --repo "$REPO"
+            exit 0
+          fi
+          cat > notes.md <<EOF
+          Unweb $VERSION, a tiny browser where every visit is a first visit.
+
+          | System | Download |
+          |---|---|
+          | Windows 10 and 11 (64-bit) | \`Unweb-windows-x86_64.msi\` |
+          | macOS, Apple silicon | \`Unweb-macos-arm64.dmg\` |
+          | macOS, Intel | \`Unweb-macos-x86_64.dmg\` |
+          | Linux (64-bit), any distribution | \`Unweb-linux-x86_64.AppImage\` |
+          | Debian and Ubuntu | \`unweb-linux-x86_64.deb\` |
+
+          These builds are not signed yet. Windows shows a SmartScreen warning: choose More info, then Run anyway. On macOS, right-click the app and choose Open the first time. Check any download against \`SHA256SUMS\`.
+
+          Every build passed the end-to-end self-test on its own platform before this release was published. Test results for this commit are in [test/results/latest](https://github.com/$REPO/tree/$tag/test/results/latest). The manual is the [README](https://github.com/$REPO/blob/$tag/README.md).
+          EOF
+          gh release create "$tag" dist/* \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --title "Unweb $tag" \
+            --notes-file notes.md \
+            --latest
