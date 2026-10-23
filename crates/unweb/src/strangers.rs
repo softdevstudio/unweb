@@ -163,6 +163,17 @@ impl Strangers {
         if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
             clear_engine_data(&page);
         }
+        // WKWebView keeps a stranger's service worker running for a few
+        // seconds after its window is gone. Clearing the store removes the
+        // worker; leaving the page first stops what it is doing.
+        #[cfg(target_os = "macos")]
+        if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
+            if let Ok(blank) = Url::parse("about:blank") {
+                let _ = page.navigate(blank);
+            }
+            let _ = page.clear_all_browsing_data();
+            std::thread::sleep(Duration::from_millis(1500));
+        }
         if let Some(w) = app.get_window(label) {
             let _ = w.destroy();
         }
