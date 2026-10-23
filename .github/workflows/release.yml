@@ -162,7 +162,7 @@ jobs:
             macOS)
               # The disk image shows the licence first; agree to it, as a
               # person opening it would.
-              yes | hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/unweb-dmg" "$(ls $b/dmg/*.dmg | head -n1)" > /dev/null
+              (yes 2>/dev/null || true) | hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/unweb-dmg" "$(ls $b/dmg/*.dmg | head -n1)" > /dev/null
               cp -R "$RUNNER_TEMP/unweb-dmg/Unweb.app" /Applications/
               hdiutil detach "$RUNNER_TEMP/unweb-dmg"
               ls /Applications/Unweb.app/Contents/MacOS/
