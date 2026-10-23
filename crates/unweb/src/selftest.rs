@@ -211,7 +211,7 @@ fn serve(
             ("200 OK", "text/html", FRAME_SET.to_string())
         }
         (false, "/frame-check") => ("200 OK", "text/html", FRAME_CHECK.to_string()),
-        (true, "/nav1") | (true, "/popup") => (
+        (true, "/nav1") | (true, "/popup") | (true, "/barnav") => (
             "200 OK",
             "text/html",
             format!("<!doctype html><title>{path}</title><p>{path}</p>"),
@@ -641,16 +641,27 @@ fn bar_checks(
 
     // Nothing can load a page in the bar (a link dropped on it, say).
     let barnav_before = hits_on(site, "/barnav");
-    let _ = eval_string(
-        app,
-        &bar_label(w),
-        &format!("location.href = '{site_url}/barnav'; 'sent'"),
-    );
-    std::thread::sleep(Duration::from_secs(2));
-    let bar_url = eval_string(app, &bar_label(w), "String(location.href)");
+    // A web address, and the app's own host name on the test server's
+    // port (engines send *.localhost to this machine).
+    let port = site_url.rsplit(':').next().unwrap_or("0");
+    let mut bar_urls = Vec::new();
+    for target in [
+        format!("{site_url}/barnav"),
+        format!("http://tauri.localhost:{port}/barnav"),
+    ] {
+        let _ = eval_string(
+            app,
+            &bar_label(w),
+            &format!("location.href = '{target}'; 'sent'"),
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        bar_urls.push(eval_string(app, &bar_label(w), "String(location.href)"));
+    }
+    let bar_url = bar_urls.join(", then ");
     // WebView2 can send the request before the refusal cancels it; what
     // counts is that the bar never shows anything but itself.
-    let bar_kept = bar_url.ends_with("/bar.html");
+    let bar_kept = bar_urls.iter().all(|u| u.ends_with("/bar.html"))
+        && bar_urls.iter().all(|u| !u.contains(&format!(":{port}/")));
     out.push(check(
         "nothing can load another page in the bar",
         bar_kept,
@@ -750,6 +761,8 @@ fn bar_checks(
         (Some(l), true) => {
             strangers.folder(l).is_some() && strangers.folder(l) != strangers.folder(w)
         }
+        // macOS: every webview gets a fresh in-memory store; the clean
+        // stranger checks are what show it.
         (Some(_), false) => true,
         (None, _) => false,
     };
@@ -765,8 +778,14 @@ fn bar_checks(
         "New stranger opens another stranger with a store of its own",
         appeared && own_store && start_page,
         format!(
-            "opened: {}; its own store: {own_store}; it shows the start page: {start_page}",
-            new_label.as_deref().unwrap_or("nothing")
+            "opened: {}; its own store: {}; it shows the start page: {start_page}",
+            new_label.as_deref().unwrap_or("nothing"),
+            if USES_FOLDERS {
+                own_store.to_string()
+            } else {
+                "not judged here (each webview gets its own in-memory store on this system)"
+                    .to_string()
+            }
         ),
     ));
     out

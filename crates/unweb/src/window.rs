@@ -41,11 +41,17 @@ pub fn window_of(webview: &str) -> Option<String> {
 }
 
 /// True for Unweb's own pages (the start page and the bar), which are
-/// served from the app's origin.
+/// served from the app's origin: exactly `tauri://localhost` on Linux and
+/// macOS, `http://tauri.localhost` (no port) on Windows. Anything else,
+/// such as `http://tauri.localhost:8765` on Linux (which the engine sends
+/// to whatever listens on that port), is an ordinary web address.
 fn is_app_origin(url: &Url) -> bool {
-    url.scheme() == "tauri"
-        || matches!(url.host_str(), Some("tauri.localhost"))
-            && matches!(url.scheme(), "http" | "https")
+    let (scheme, host) = if cfg!(windows) {
+        ("http", "tauri.localhost")
+    } else {
+        ("tauri", "localhost")
+    };
+    url.scheme() == scheme && url.host_str() == Some(host) && url.port().is_none()
 }
 
 /// What the page may open. Web pages, plus the start page Unweb itself
@@ -272,25 +278,40 @@ mod tests {
     #[test]
     fn what_the_page_may_open() {
         let ok = |s: &str| page_may_open(&Url::parse(s).unwrap());
+        let app = if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        };
         assert!(ok("https://example.com/x"));
         assert!(ok("http://127.0.0.1:8080/"));
         assert!(ok("about:blank"));
         assert!(ok("data:text/html,hi"));
-        assert!(ok("tauri://localhost/index.html"));
-        assert!(ok("tauri://localhost"));
-        assert!(ok("http://tauri.localhost/"));
-        assert!(!ok("tauri://localhost/bar.html"));
-        assert!(!ok("https://tauri.localhost/bar.html"));
+        assert!(ok(&format!("{app}/index.html")));
+        assert!(ok(&format!("{app}/")));
+        assert!(!ok(&format!("{app}/bar.html")));
+        assert!(!ok(&format!("{app}/index.html?x=1")));
+        assert!(!ok(&format!("{app}/#x")));
         assert!(!ok("http://ipc.localhost/go"));
         assert!(!ok("file:///etc/passwd"));
         assert!(!ok("javascript:alert(1)"));
-        assert!(!ok("tauri://localhost/index.html?x=1"));
-        assert!(!ok("tauri://localhost/#x"));
+    }
+
+    #[test]
+    fn the_bar_opens_only_itself() {
         let bar = |s: &str| bar_may_open(&Url::parse(s).unwrap());
-        assert!(bar("tauri://localhost/bar.html"));
-        assert!(bar("http://tauri.localhost/bar.html"));
-        assert!(!bar("tauri://localhost/index.html"));
-        assert!(!bar("tauri://localhost/bar.html?x"));
+        let app = if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        };
+        assert!(bar(&format!("{app}/bar.html")));
+        assert!(!bar(&format!("{app}/index.html")));
+        assert!(!bar(&format!("{app}/bar.html?x")));
+        // The app's host on another port is someone else's server.
+        assert!(!bar("http://tauri.localhost:8765/bar.html"));
+        assert!(!bar("https://tauri.localhost/bar.html"));
+        assert!(!bar("tauri://localhost:1/bar.html"));
         assert!(!bar("http://127.0.0.1:8765/fakebar.html"));
         assert!(!bar("data:text/html,x"));
         assert!(!bar("about:blank"));

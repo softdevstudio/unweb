@@ -145,6 +145,8 @@ jobs:
           assert r["passed"], "self-test failed"
           assert not any(c.get("skipped") for c in r["checks"]), "a check did not run"
           EOF
+            sleep 5
+            bash scripts/check-left-after-exit.sh
           }
           case "${{ runner.os }}" in
             Linux)
