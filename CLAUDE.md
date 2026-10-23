@@ -71,8 +71,15 @@ Agreed with YK on October 23, 2026 (his plan text, sent the same day); YK approv
 
 ## Where we are
 
-Session 1 (foundation and isolation prototype) in progress, at YK's word "Unweb.org: go ahead", October 23, 2026.
+October 23, 2026, session 1 (foundation and isolation prototype) done, at YK's word "Unweb.org: go ahead" and "Go":
+
+- Repository: Cargo workspace (version 0.0.1, never released), crates/unweb (Tauri 2.12, no unstable feature), LICENSE, NOTICE, THIRD_PARTY_LICENSES.md, CI on three OSes (copied from Watchkeeper's), scripts/record-results.sh and scripts/third-party-licenses.py. No address bar yet: a stranger opens at a start page or the address given on the command line.
+- Strangers and wiping as described in Design. Linux needed the engine clear plus settle, delete and watch, because WebKitGTK writes cache records into a closed stranger's folder seconds later.
+- Self-test, 7 checks: A leaves every kind of trace (server and script cookies, localStorage, IndexedDB, Cache API, a service worker, an HTTP-cached file, a frame on another site, a new WebGL shader); A's control finds them; B open at the same time and C opened after A closed find nothing and send no cookie; A's folder is deleted and stays deleted; nothing is left in Unweb's folders; on Linux the shared GPU shader cache is unchanged. On macOS WKWebView keeps no HTTP cache between a stranger's pages, so the cache control is waived there and the detail says so. No engine lets a cross-site frame's cookie be seen again even by A, so it is reported as not judged.
+- Passes on Linux (WebKitGTK 2.52.6, local, recorded in test/results/latest/linux) and in CI on ubuntu-latest, macos-latest and windows-latest (WebView2 155) at afedd24.
+- Independent review in two rounds by a reviewer agent that had not seen the implementation, with probe pages against a scratch copy. Round 1: isolation of every storage type and the wipes held; found the shared Mesa shader cache readable across strangers by timing, a second copy of Unweb deleting the first one's strangers, a frame cookie check that could never fail, HTTP sign-in passwords able to reach the keyring, and forced closes skipping the wipe. Round 2 confirmed all fixed (the shader check fails with the fix removed) and found a start-up race in the run lock, fixed by locking before the file is visible. Stated gaps: driver shader caches on Windows and macOS, forced closes (cleaned at next start).
+- YK's decision on the core recorded under Origin.
 
 ## Next
 
-Session 1 approved by YK. Nothing beyond it approved yet.
+Session 1 done. Nothing beyond it approved yet. Waiting for YK's go-ahead on session 2 (version 0.1).
