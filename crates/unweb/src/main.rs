@@ -15,7 +15,6 @@ mod hsts;
 mod linux_layout;
 mod location;
 mod nav;
-mod relay;
 mod selftest;
 mod setups;
 mod strangers;

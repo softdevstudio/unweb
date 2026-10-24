@@ -402,13 +402,6 @@ pub fn add_tile(
             }
         });
     }
-    // macOS: the proxy again, with fallback to going direct turned off,
-    // before the page's first request.
-    #[cfg(target_os = "macos")]
-    if let Some(l) = &settings.location {
-        crate::location::macos_no_failover(&page_view, l)
-            .map_err(|e| tauri::Error::Io(std::io::Error::other(e)))?;
-    }
     #[cfg(target_os = "macos")]
     let _ = page_view;
     Ok(())
