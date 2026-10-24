@@ -134,6 +134,8 @@ October 24, 2026, session 5 (site) done, at YK's word "go ahead":
 - Hugo couldn't be installed here (refused), so the site was checked by parsing front matter and checking every internal link and image; the live feed at unweb.org lists every post.
 - softdevstudio.com lists Unweb as the thirty-first project (data/studio.toml) with a note on 0.1.0 to 0.3.0; its CONTENT-PLAN.md has the brief, names, tag, footer, feeds row and session log row 2r.
 
+October 24, 2026, at YK's word (homepage image "kinda lame", more case studies; he chose a contrast screenshot and all four topics): unweb.org's home page image is now four strangers on a made-up headphone shop seeing four prices (returning, new, German and French proxies), and four more case studies went up (airline fare rising per look, search results reordered for a returning visitor, ad verification across four countries with a setup, both sides of a checkout A/B test). examples/case-studies/server.py serves the new pages and a third stand-in proxy (Spain, 8963). Seen while taking the screenshots, not yet looked into: on Linux under Xvfb, after a stranger's location is changed from its strip, every page in the window stops painting on screen while the engines still hold the pages (Compare showed them). Strangers opened from a setup with their locations paint normally.
+
 ## Next
 
 All five plan items are done. Nothing beyond this is approved. Waiting for YK.
