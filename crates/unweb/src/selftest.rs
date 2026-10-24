@@ -2482,12 +2482,13 @@ fn setup_check(app: &AppHandle, strangers: &Strangers, win: &str, site_port: u16
         })
         .unwrap_or_default();
     let same = reopened == expected;
-    std::thread::sleep(Duration::from_secs(2));
     // At Unweb's start page, with new stores of their own.
-    let fresh = new_win().is_some_and(|w| {
-        strangers.tiles(&w).iter().all(|t| {
-            Url::parse(&page_address(app, t)).is_ok_and(|u| crate::window::is_app_origin(&u))
-                && !strangers.tiles(win).contains(t)
+    let fresh = wait_until(Instant::now() + Duration::from_secs(10), || {
+        new_win().is_some_and(|w| {
+            strangers.tiles(&w).iter().all(|t| {
+                Url::parse(&page_address(app, t)).is_ok_and(|u| crate::window::is_app_origin(&u))
+                    && !strangers.tiles(win).contains(t)
+            })
         })
     });
     if let Some(w) = new_win() {

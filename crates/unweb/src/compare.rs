@@ -29,18 +29,29 @@ pub struct Compare {
     dir: PathBuf,
     /// Each compare window's strip, until its page has loaded.
     pending: Mutex<HashMap<String, serde_json::Value>>,
+    /// The self-test keeps the latest screenshots to check them; otherwise
+    /// nothing is kept once the compare window has them.
+    keep_shots: bool,
     /// For the self-test: the latest screenshots and every saved file.
     pub last_shots: Mutex<Vec<Vec<u8>>>,
     pub saved: Mutex<Vec<PathBuf>>,
 }
 
 impl Compare {
-    pub fn new(dir: PathBuf) -> Compare {
+    pub fn new(dir: PathBuf, keep_shots: bool) -> Compare {
         Compare {
             dir,
+            keep_shots,
             pending: Mutex::new(HashMap::new()),
             last_shots: Mutex::new(Vec::new()),
             saved: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A compare window is gone: drop its strip if its page never took it.
+    pub fn forget(&self, label: &str) {
+        if let Ok(mut p) = self.pending.lock() {
+            p.remove(label);
         }
     }
 }
@@ -101,8 +112,10 @@ pub fn open(app: &AppHandle, strangers: &Strangers, win: &str) -> Result<String,
         }));
         shots.push(png);
     }
-    if let Ok(mut l) = compare.last_shots.lock() {
-        *l = shots;
+    if compare.keep_shots {
+        if let Ok(mut l) = compare.last_shots.lock() {
+            *l = shots;
+        }
     }
     let label = format!("{PREFIX}{}", crate::strangers::random_hex());
     let data = serde_json::json!({ "panels": panels, "taken": utc_stamp(true) });
@@ -326,7 +339,7 @@ mod tests {
             std::process::id(),
             b.iter().map(|x| format!("{x:02x}")).collect::<String>()
         ));
-        let c = Compare::new(dir.clone());
+        let c = Compare::new(dir.clone(), false);
         let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nrest");
         let a = save(&c, &format!("data:image/png;base64,{png}")).unwrap();
         let b2 = save(&c, &png).unwrap();

@@ -16,7 +16,7 @@ Each window has a bar at the top:
 - **The address field.** Type an address and press Enter. `example.com` opens `https://example.com/`. Only web addresses open; typing words doesn't send them to a search engine.
 - **Side by side.** Adds another stranger to the window, next to the ones already there, up to four (three in a row, four as two by two). The new one opens the address you last typed in the bar (or the start page), not the address the others are on now: a site can put an identifier in its own address, and a new stranger opening it would carry it. With several strangers, the address you type goes to all of them, and Back, Forward and Reload act on all of them. It's the quick way to see whether a site shows different strangers different things.
 - **Setups.** Saves the window's strangers, each with its language and location, under a name, so you can open the same set again in a new window (four strangers in four countries, say). A setup holds only what each stranger is opened with: no address, no cookie, nothing a stranger saw. The same menu opens and deletes setups.
-- **Compare.** Takes a screenshot of every stranger in the window and shows them side by side in a window of their own, each under its language, location, cookie count and address (without the part after `?`, where sites put identifiers). Save image writes the strip as one PNG to your Downloads folder.
+- **Compare.** Takes a screenshot of every stranger in the window and shows them side by side in a window of their own, each under its language, location, cookie count and address (without the part after `?`, where sites usually put identifiers; one a site puts in the path itself still shows). Save image writes the strip as one PNG to your Downloads folder, or your home folder when there is none. The screenshots stay in the compare window and go when it closes.
 - **New stranger.** Opens another window with a new stranger in it.
 
 Above each stranger is a thin strip:
@@ -32,15 +32,17 @@ A link that asks for a new window opens in the same stranger, so it stays in tha
 
 ## Locations
 
-A stranger with a location sends everything through that proxy: pages, images, calls, frames, local addresses like `127.0.0.1` (which engines like to send direct), and the names it looks up, which the proxy resolves for it. If the proxy can't be reached, the stranger loads nothing; it never falls back to going direct. One exception on macOS: requests to your own computer (`127.0.0.1`, `localhost`) skip the proxy, because macOS's network layer sends them direct and an app can't change that. That traffic never leaves your computer, so no site learns your address from it. WebRTC is turned off in a stranger with a location, because it can reach the network around a proxy and show your own address.
+A stranger with a location sends everything through that proxy: pages, images, calls, frames, local addresses like `127.0.0.1` (which engines like to send direct), and the names it looks up, which the proxy resolves for it. If the proxy can't be reached, the stranger loads nothing; it never falls back to going direct. On macOS Unweb sets the proxy itself with Apple's fallback to going direct turned off; the self-test caught that fallback in action before. One exception on macOS: requests to your own computer (`127.0.0.1`, `localhost`) skip the proxy, because macOS's network layer sends them direct and an app can't change that. That traffic never leaves your computer, so no site learns your address from it. WebRTC is turned off in a stranger with a location, because it can reach the network around a proxy and show your own address.
 
 Unweb doesn't come with proxies. Use one you run or rent. HTTP proxies and SOCKS5 proxies work; proxies that ask for a user name and password don't, yet. On macOS a location needs macOS 14 or later.
+
+Names are looked up by the proxy, not by your computer, for everything a stranger loads. Speculative lookups an engine makes on its own (to prefetch a link, say) were checked on Linux, where none happened; on Windows Unweb tells the engine to fail any lookup but the proxy's; on macOS they haven't been checked.
 
 A location changes where a stranger's traffic comes from, not everything about it: the proxy sees all of that traffic (so only use one you trust), and the stranger still shows your computer's time zone and, unless you give it another, its language.
 
 ## Saved setups
 
-Setups are the one thing Unweb keeps, and only when you save one: a small file, `setups.json`, in Unweb's settings folder (`~/.config/org.unweb.app` on Linux, `%APPDATA%\org.unweb.app` on Windows, `~/Library/Application Support/org.unweb.app` on macOS). It holds each setup's name and, for each stranger, its language and location. Deleting the last setup deletes the file. A file Unweb can't read is renamed `setups.json.bad-<time>` and left for you, never deleted.
+Setups are the one thing Unweb keeps, and only when you save one: a small file, `setups.json`, in Unweb's settings folder (`~/.config/org.unweb.app` on Linux, `%APPDATA%\org.unweb.app` on Windows, `~/Library/Application Support/org.unweb.app` on macOS). It holds each setup's name and, for each stranger, its language and location. Deleting the last setup deletes the file. A setup with a location Unweb doesn't take (in a file edited by hand, say) won't open, so no stranger of it goes direct by mistake. A file Unweb can't read is renamed `setups.json.bad-<time>` and left for you, never deleted.
 
 ## How a stranger is kept apart
 

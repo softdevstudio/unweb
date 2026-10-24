@@ -233,9 +233,7 @@ async fn save_setup(webview: tauri::Webview, name: String) -> Result<(), String>
 #[tauri::command]
 async fn open_setup(webview: tauri::Webview, name: String) -> Result<(), String> {
     window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
-    let settings = setups_of(&webview)?
-        .get(&name)
-        .ok_or("There is no setup by that name")?;
+    let settings = setups_of(&webview)?.get(&name)?;
     let app = webview.app_handle().clone();
     strangers_of(&webview)?
         .open_window(&app, settings.into_iter().map(|s| (None, s)).collect())
@@ -355,7 +353,10 @@ fn main() {
                     .download_dir()
                     .or_else(|_| handle.path().home_dir())?,
             };
-            app.manage(Arc::new(compare::Compare::new(compare_dir)));
+            app.manage(Arc::new(compare::Compare::new(
+                compare_dir,
+                selftest_dir.is_some(),
+            )));
             let _ = setup_holder.set(strangers.clone());
             app.manage(strangers.clone());
             let start = match &selftest_dir {
@@ -390,6 +391,9 @@ fn main() {
             event: WindowEvent::Destroyed,
             ..
         } if label.starts_with(compare::PREFIX) => {
+            if let Some(c) = _app.try_state::<Arc<compare::Compare>>() {
+                c.forget(&label);
+            }
             if let Some(s) = holder.get().cloned() {
                 std::thread::spawn(move || {
                     s.closed(&label);

@@ -48,15 +48,35 @@ const FORMAT: &str = "unweb-setups";
 
 pub struct Setups {
     path: PathBuf,
-    /// One change at a time; each change reads the file afresh, so another
-    /// copy of Unweb's saves aren't lost.
+    /// One change at a time in this copy of Unweb; `setups.json.lock`
+    /// beside the file does the same between copies. Each change reads the
+    /// file afresh, so another copy's saves aren't lost.
     lock: Mutex<()>,
 }
 
 impl Setups {
     pub fn new(path: PathBuf) -> Setups {
-        // A save cut short leaves this behind.
-        let _ = std::fs::remove_file(tmp_path(&path));
+        // A save cut short leaves its new file behind; one older than a
+        // minute isn't another copy's save in progress.
+        if let Some(dir) = path.parent() {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let old = e
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > std::time::Duration::from_secs(60));
+                    if old
+                        && e.file_name()
+                            .to_string_lossy()
+                            .starts_with("setups.json.tmp")
+                    {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
         Setups {
             path,
             lock: Mutex::new(()),
@@ -80,13 +100,30 @@ impl Setups {
         self.list().into_iter().map(|s| s.name).collect()
     }
 
-    /// The strangers of setup `name`, if there is one.
-    pub fn get(&self, name: &str) -> Option<Vec<Settings>> {
-        let name = clean_name(name).ok()?;
-        self.list()
+    /// The strangers of setup `name`. A setup with a location that doesn't
+    /// pass the check (a file edited by hand, say) is refused: that stranger
+    /// would otherwise go direct.
+    pub fn get(&self, name: &str) -> Result<Vec<Settings>, String> {
+        let name = clean_name(name)?;
+        let setup = self
+            .list()
             .into_iter()
             .find(|s| s.name == name)
-            .map(|s| s.strangers.iter().map(to_settings).collect())
+            .ok_or("There is no setup by that name")?;
+        setup
+            .strangers
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                to_settings(t).map_err(|_| {
+                    format!(
+                        "Stranger {} of this setup has a location Unweb doesn't take ({}); it won't open it without one",
+                        i + 1,
+                        t.location
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Saves `strangers` as setup `name`, replacing one of the same name.
@@ -96,6 +133,7 @@ impl Setups {
             return Err("This window has no strangers to save".into());
         }
         let _held = self.lock.lock();
+        let _file_lock = self.lock_file()?;
         let mut all = self.read();
         let entry = Setup {
             name: name.clone(),
@@ -125,13 +163,40 @@ impl Setups {
     pub fn delete(&self, name: &str) -> Result<(), String> {
         let name = clean_name(name)?;
         let _held = self.lock.lock();
+        let file_lock = self.lock_file()?;
         let mut all = self.read();
         let before = all.len();
         all.retain(|s| s.name != name);
         if all.len() == before {
             return Err("There is no setup by that name".into());
         }
-        self.write(&all)
+        self.write(&all)?;
+        if all.is_empty() {
+            // The last one: the lock file and an empty folder go too.
+            drop(file_lock);
+            let _ = std::fs::remove_file(self.path.with_file_name("setups.json.lock"));
+            if let Some(dir) = self.path.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        Ok(())
+    }
+
+    /// Holds `setups.json.lock` while a change is made, so two copies of
+    /// Unweb don't write at once. Made only when a change is.
+    fn lock_file(&self) -> Result<std::fs::File, String> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't save the setup: {e}"))?;
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_file_name("setups.json.lock"))
+            .map_err(|e| format!("Couldn't save the setup: {e}"))?;
+        f.lock()
+            .map_err(|e| format!("Couldn't save the setup: {e}"))?;
+        Ok(f)
     }
 
     fn read(&self) -> Vec<Setup> {
@@ -153,12 +218,16 @@ impl Setups {
                         .strangers
                         .into_iter()
                         .take(crate::window::MAX_TILES)
-                        .map(|t| {
-                            let s = to_settings(&t);
-                            SetupStranger {
-                                language: s.lang,
-                                location: crate::location::show(s.location.as_ref()),
-                            }
+                        .map(|t| SetupStranger {
+                            language: crate::window::known_language(&t.language)
+                                .unwrap_or("")
+                                .to_string(),
+                            // A location that doesn't pass is kept as it is, so
+                            // opening the setup can refuse it rather than go direct.
+                            location: match crate::location::parse_location(&t.location) {
+                                Ok(l) => crate::location::show(l.as_ref()),
+                                Err(_) => t.location.trim().chars().take(300).collect(),
+                            },
                         })
                         .collect();
                     (!strangers.is_empty()).then_some(Setup { name, strangers })
@@ -187,10 +256,6 @@ impl Setups {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(format!("Couldn't delete the setups file: {e}")),
             }
-            // Not even an empty folder is left, if nothing else is in it.
-            if let Some(dir) = self.path.parent() {
-                let _ = std::fs::remove_dir(dir);
-            }
             return Ok(());
         }
         let file = SetupsFile {
@@ -202,7 +267,13 @@ impl Setups {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't save the setup: {e}"))?;
         }
-        let tmp = tmp_path(&self.path);
+        let mut b = [0u8; 6];
+        let _ = getrandom::fill(&mut b);
+        let tmp = self.path.with_file_name(format!(
+            "setups.json.tmp-{}-{}",
+            std::process::id(),
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        ));
         let written = (|| {
             use std::io::Write;
             let mut f = std::fs::File::create(&tmp)?;
@@ -218,20 +289,16 @@ impl Setups {
     }
 }
 
-fn tmp_path(path: &Path) -> PathBuf {
-    path.with_file_name("setups.json.tmp")
-}
-
 /// A setup's stranger as the settings it opens with. A language this
-/// version doesn't offer, or a location that doesn't pass the check, is
-/// left out.
-fn to_settings(t: &SetupStranger) -> Settings {
-    Settings {
+/// version doesn't offer is left out; a location that doesn't pass the
+/// check is an error, never "direct".
+fn to_settings(t: &SetupStranger) -> Result<Settings, String> {
+    Ok(Settings {
         lang: crate::window::known_language(&t.language)
             .unwrap_or("")
             .to_string(),
-        location: crate::location::parse_location(&t.location).ok().flatten(),
-    }
+        location: crate::location::parse_location(&t.location)?,
+    })
 }
 
 /// A setup's name: trimmed, 1 to 60 characters, no control characters.
@@ -285,6 +352,7 @@ mod tests {
         setups.save("  Four countries ", &four).unwrap();
         assert_eq!(setups.names(), vec!["Four countries"]);
         assert_eq!(setups.get("Four countries").unwrap(), four.to_vec());
+        assert!(setups.get("No such").is_err());
         // The file holds the settings and nothing else.
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"format\": \"unweb-setups\""));
@@ -356,8 +424,14 @@ mod tests {
         let list = setups.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].strangers.len(), crate::window::MAX_TILES);
-        assert_eq!(list[0].strangers[0], SetupStranger::default());
+        // The made-up language is dropped; the proxy with a password stays
+        // as written, and opening the setup is refused rather than going
+        // direct.
+        assert_eq!(list[0].strangers[0].language, "");
+        assert_eq!(list[0].strangers[0].location, "http://u:p@h:1");
         assert_eq!(list[0].strangers[1].location, "http://h:8080");
+        let refused = setups.get("ok").unwrap_err();
+        assert!(refused.contains("Stranger 1"), "{refused}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
