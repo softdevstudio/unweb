@@ -466,18 +466,20 @@ pub(crate) fn store<R: tauri::Runtime>(
 /// Places the bar and every stranger of `window`. On Linux GTK does the
 /// placing, after the widgets are packed (linux_layout.rs).
 pub fn layout(app: &AppHandle, window: &str) {
-    let Some(strangers) = app.try_state::<std::sync::Arc<crate::strangers::Strangers>>() else {
-        return;
-    };
-    let tiles = strangers.tiles(window);
+    // On Linux the strangers are read when the layout runs on the main
+    // thread (linux_layout::arrange).
     #[cfg(target_os = "linux")]
     if let Some(w) = app.get_window(window) {
-        if let Err(e) = crate::linux_layout::arrange(&w, tiles) {
+        if let Err(e) = crate::linux_layout::arrange(&w) {
             eprintln!("unweb: window layout: {e}");
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let Some(strangers) = app.try_state::<std::sync::Arc<crate::strangers::Strangers>>() else {
+            return;
+        };
+        let tiles = strangers.tiles(window);
         let Some(w) = app.get_window(window) else {
             return;
         };

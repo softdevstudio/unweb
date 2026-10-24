@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gtk::prelude::*;
+use tauri::Manager;
 
 use crate::window::{grid, BAR_HEIGHT, STRIP_HEIGHT};
 
@@ -35,13 +36,26 @@ fn detach(w: &gtk::Widget) {
     }
 }
 
-/// Packs the bar and the strangers `tiles` (in order) of `window`. Runs on
+/// Packs the bar and the strangers (in order) of `window`. Runs on
 /// the main thread and doesn't wait for it, so it can be called from
 /// anywhere. Call it after every stranger added or closed.
-pub fn arrange(window: &tauri::Window, tiles: Vec<String>) -> Result<(), String> {
+pub fn arrange(window: &tauri::Window) -> Result<(), String> {
     let w = window.clone();
     window
         .run_on_main_thread(move || {
+            // The strangers are read here, when the layout runs, not when it
+            // was asked for: layouts queued from different threads can run
+            // in any order, and an old list would drop a live stranger.
+            let Some(strangers) = w.try_state::<std::sync::Arc<crate::strangers::Strangers>>()
+            else {
+                return;
+            };
+            let tiles = strangers.tiles(w.label());
+            // No strangers left: the window is closing, and a grid made now
+            // would never be forgotten.
+            if tiles.is_empty() {
+                return;
+            }
             if let Err(e) = pack(&w, &tiles) {
                 eprintln!("unweb: window layout: {e}");
             }
@@ -131,11 +145,14 @@ fn pack(window: &tauri::Window, tiles: &[String]) -> Result<(), String> {
             t.retain(|k, (w, strip, page)| {
                 let keep = *w != label || tiles.contains(k);
                 if !keep {
+                    // Take the webviews out first: dropping the last
+                    // reference to the cell destroys whatever is still in
+                    // it, and the webviews are closed by their owner.
+                    detach(strip);
+                    detach(page);
                     if let Some(cell) = cells.remove(k) {
                         grid_widget.remove(&cell);
                     }
-                    detach(strip);
-                    detach(page);
                 }
                 keep
             });
