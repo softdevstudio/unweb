@@ -143,14 +143,15 @@ October 24, 2026, release stabilization authorized by YK ("go") after repository
 - Retrieved the Intel macOS installer log: Rust compilation succeeded; bundle_dmg.sh failed because hdiutil could not eject a busy temporary disk.
 - Release packaging now retries only that specific macOS failure once, after ten seconds. Other failures stop immediately. Build logs and installed-build self-test JSON are retained as diagnostics, separately from installer artifacts.
 - Validated YAML and exercised the build step with mock commands: success, compilation failure, transient busy disk, repeated busy disk and Linux failure. All five behave as expected. Runtime verification remains in CI because this workspace has no Rust toolchain.
-- Independent workflow review found no blocking issues; confirmed bounded retry, failure propagation and artifact separation. Actual Intel packaging and installed-build verification remain pending in CI.
+- Independent workflow review found no blocking issues; confirmed bounded retry, failure propagation and artifact separation.
+- CI passed on Linux, Windows and Apple silicon macOS at 47366e2. Release run 40085265341 passed all four build jobs and installed-package self-tests (Linux .deb and AppImage, both macOS .dmg architectures, Windows .msi), then published v0.3.1 with five installers and SHA256SUMS. Diagnostics are retained as separate workflow artifacts.
 
 ## Gaps and to do
 
 Kept here for any agent working on this repository (Claude reads this file; AGENTS.md points other agents here). Update it when an item is done or found.
 
 Not done:
-- v0.3.1 (the Linux layout fix) is on main but not released. The release run failed at the Intel macOS "Build installers" step and the rerun was cancelled at YK's word. Main's version is 0.3.1 with no tag, so the next push that passes CI starts the release workflow again; commits meant not to release need [skip ci] until YK decides.
+- Release stabilization completed: v0.3.1 is published. Remaining correctness and site items follow.
 - Cosmetic, Linux: after closing a stranger, a small stale patch can stay in another page's header until it repaints (seen under Xvfb).
 - Very low, Linux: a layout queued between linux_layout::forget_window and the window's destroy can leak one gtk::Grid.
 - Very low, pre-existing: if add_tile fails after a concurrent layout during a location change, the old stranger is put back with no cell and stays invisible.
@@ -171,4 +172,4 @@ Stated gaps (in the README and on the site; not planned work):
 
 ## Next
 
-Release stabilization is approved. Complete independent review, run CI and verify installed packages before publishing 0.3.1; then report this session. Later correctness and website work remain for subsequent sessions.
+Release stabilization is complete and v0.3.1 is published. Report this session and wait for YK before the next session: setup-file synchronization, Linux layout failure recovery, macOS proxy behavior and accurate test reporting. Website verification follows.
