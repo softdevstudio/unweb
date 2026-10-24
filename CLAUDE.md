@@ -61,7 +61,7 @@ photozeitgeist/unweb.org uses the unchanged Hugo Launch template: keep themes/ a
 
 ## Development plan
 
-Agreed with YK on October 23, 2026 (his plan text, sent the same day); YK approved sessions 1 and 2. Each later session needs YK's go-ahead. Pause and report after each session.
+Agreed with YK on October 23, 2026 (his plan text, sent the same day); YK approved sessions 1, 2 and 3. Each later session needs YK's go-ahead. Pause and report after each session.
 
 1. Foundation and isolation prototype: repository, license files, CI on three OSes, one throwaway store per stranger, wiped on close and checked, and a self-test proving nothing carries over on all three engines.
 2. Version 0.1: strangers in separate windows, each fully isolated and wiped on close; address bar, back, forward and reload; the harder carry-over cases (HSTS, cache-based tracking, service workers left behind, the normal browser, leftover files on Windows); release workflow and installers.
@@ -93,4 +93,4 @@ October 23, 2026, session 2 (version 0.1) done, at YK's word "Go":
 
 ## Next
 
-Session 2 done. Nothing beyond it approved yet. Waiting for YK's go-ahead on session 3 (version 0.2).
+Session 3 (version 0.2) approved by YK ("Go", October 24, 2026) and in progress. Nothing beyond it approved yet.
