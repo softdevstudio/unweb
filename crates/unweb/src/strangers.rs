@@ -428,17 +428,19 @@ impl Strangers {
         }
         // Decide and take the stranger out of its window in one step, so
         // two closes at once can't both leave the window with none.
+        // (A tile close takes the label out here, under the same lock.)
         let decision = self.windows.lock().ok().and_then(|mut w| {
             let (win, tiles) = w.iter_mut().find(|(_, t)| t.iter().any(|x| x == label))?;
             if tiles.len() <= 1 {
                 Some((win.clone(), true))
             } else {
+                tiles.retain(|t| t != label);
                 Some((win.clone(), false))
             }
         });
         match decision {
             Some((win, true)) => self.retire_window(app, &win),
-            Some(_) => self.retire_tile(app, label),
+            Some((win, false)) => self.finish_tile(app, label, Some(win)),
             None => {}
         }
     }
@@ -474,6 +476,12 @@ impl Strangers {
                 tiles.retain(|t| t != label);
             }
         }
+        self.finish_tile(app, label, win);
+    }
+
+    /// The rest of a tile close, once the stranger is out of its window's
+    /// list.
+    fn finish_tile(&self, app: &AppHandle, label: &str, win: Option<String>) {
         self.clear_stranger(app, label);
         for v in [
             crate::window::strip_label(label),

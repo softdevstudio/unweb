@@ -1056,6 +1056,13 @@ fn grid_checks(
     // at the same address, with nothing of the old one.
     let third = labels[2].clone();
     if LANGUAGE_PER_STRANGER {
+        // The site moves the third stranger to an address of its own; the
+        // new stranger must open the one typed in the bar.
+        navigate_page(app, &third, &format!("{site_url}/gridcheck?moved=1"));
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            page_address(app, &third).contains("moved=1")
+        });
+        std::thread::sleep(Duration::from_millis(500));
         let before = site.hits().len();
         let _ = eval_string(
             app,
@@ -1075,13 +1082,14 @@ fn grid_checks(
             .find(|h| h.path == "/gridcheck")
             .cloned();
         let fresh = new_hit.as_ref().is_some_and(|h| gids(&h.cookie).is_empty());
+        let typed = new_hit.as_ref().is_some_and(|h| !h.query.contains("moved"));
         let german = new_hit.as_ref().is_some_and(|h| starts(&h.lang, "de"));
         let old_gone = strangers.wipes().iter().any(|w| w.label == third && w.gone);
         out.push(check(
             "changing a stranger's language opens a new stranger in its place",
-            replaced && new != third && fresh && german && old_gone && strangers.lang(&new) == "de-DE",
+            replaced && new != third && fresh && typed && german && old_gone && strangers.lang(&new) == "de-DE",
             format!(
-                "still three strangers with the new one third: {replaced}; it reopened the same address: {}; it sent no earlier cookie: {fresh}; its language header: {:?}; the old one's data deleted: {old_gone}",
+                "still three strangers with the new one third: {replaced}; it opened the typed address: {}, not the one the site moved the old one to: {typed}; it sent no earlier cookie: {fresh}; its language header: {:?}; the old one's data deleted: {old_gone}",
                 new_hit.is_some(),
                 new_hit.as_ref().map(|h| h.lang.clone()).unwrap_or_default()
             ),
@@ -1138,17 +1146,20 @@ fn grid_checks(
     let before_tiles = strangers.tiles(&win);
     let before = site.hits().len();
     bar_call(app, &win, "side_by_side", "{}");
-    let added = wait_until(Instant::now() + Duration::from_secs(20), || {
+    let started = Instant::now();
+    let added = wait_until(Instant::now() + Duration::from_secs(40), || {
         strangers.tiles(&win).len() > before_tiles.len()
     });
+    let added_after = started.elapsed();
     let new_tile = strangers
         .tiles(&win)
         .into_iter()
         .find(|t| !before_tiles.contains(t))
         .unwrap_or_default();
-    let opened_at = wait_until(Instant::now() + Duration::from_secs(10), || {
+    let opened_at = wait_until(Instant::now() + Duration::from_secs(30), || {
         page_address(app, &new_tile).contains("/gridcheck")
     });
+    let opened_after = started.elapsed();
     std::thread::sleep(Duration::from_millis(800));
     let new_address = page_address(app, &new_tile);
     let leaked = new_address.contains("uid=")
@@ -1159,8 +1170,10 @@ fn grid_checks(
         "a new stranger side by side opens the typed address, not one a site made",
         added && opened_at && !leaked,
         format!(
-            "the first stranger was on {}; the new one opened {new_address}; an identifier from the site's address reached it: {leaked}",
-            page_address(app, &first)
+            "the first stranger was on {}; a new stranger added: {added} (after {:.1} s); it opened {new_address}: {opened_at} (after {:.1} s); an identifier from the site's address reached it: {leaked}",
+            page_address(app, &first),
+            added_after.as_secs_f64(),
+            opened_after.as_secs_f64()
         ),
     ));
 

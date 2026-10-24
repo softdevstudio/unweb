@@ -21,13 +21,13 @@
       "name": "a stranger open at the same time finds nothing",
       "pass": true,
       "skipped": false,
-      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; ETags sent back: []; requests meanwhile: /check /cached.js /etag.js /report"
+      "detail": "page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; ETags sent back: []; requests meanwhile: /check /etag.js /cached.js /report"
     },
     {
       "name": "a closed stranger's data is deleted",
       "pass": true,
       "skipped": false,
-      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-47aceb1c915e7ce2) after 14.8s"
+      "detail": "deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-0e8e9b9d3e263594) after 14.8s"
     },
     {
       "name": "a closed stranger's service worker stops",
@@ -45,7 +45,7 @@
       "name": "the bar shows the page's address",
       "pass": true,
       "skipped": false,
-      "detail": "page at http://127.0.0.1:41519/check?who=C; bar shows \"http://127.0.0.1:41519/check?who=C\""
+      "detail": "page at http://127.0.0.1:43525/check?who=C; bar shows \"http://127.0.0.1:43525/check?who=C\""
     },
     {
       "name": "the bar's address, back, forward and reload work, and a page can't trap them",
@@ -63,7 +63,7 @@
       "name": "a page can't call the app, and its popups stay in the same stranger",
       "pass": true,
       "skipped": false,
-      "detail": "the page's calls: [\"name=new_stranger&r=refused\", \"name=go&r=refused\", \"name=reload&r=refused\", \"name=back&r=refused\", \"name=forward&r=refused\", \"name=side_by_side&r=refused\", \"name=set_language&r=refused\", \"name=close_stranger&r=refused\"]; window.open opened in this stranger's page: true; windows before 2, after 2; the window and page names the page can read are random: true (win-833dd6b40529fbc5 page-1e2b9946cedfa3b4)"
+      "detail": "the page's calls: [\"name=new_stranger&r=refused\", \"name=go&r=refused\", \"name=reload&r=refused\", \"name=back&r=refused\", \"name=forward&r=refused\", \"name=side_by_side&r=refused\", \"name=set_language&r=refused\", \"name=close_stranger&r=refused\"]; window.open opened in this stranger's page: true; windows before 2, after 2; the window and page names the page can read are random: true (win-a89493cc847c7d96 page-3e00e5c890fd33cb)"
     },
     {
       "name": "the bar and the strip keep their height and the page fills the rest",
@@ -75,7 +75,7 @@
       "name": "New stranger opens another stranger with a store of its own",
       "pass": true,
       "skipped": false,
-      "detail": "opened: stranger-80dfb76fa8c0d750; its own store: true; it shows the start page: true"
+      "detail": "opened: stranger-dd76c9ce7c6fc218; its own store: true; it shows the start page: true"
     },
     {
       "name": "the cookie counter counts what each stranger was given",
@@ -93,7 +93,7 @@
       "name": "strangers side by side keep their stores apart",
       "pass": true,
       "skipped": false,
-      "detail": "ID cookies handed out: [\"e2b791553d5d\", \"83a1da69d0b1\", \"12b6e88c6e06\"]; sent back on the shared address, per request: [[\"e2b791553d5d\"], [\"12b6e88c6e06\"], [\"83a1da69d0b1\"]] (each must send exactly its own)"
+      "detail": "ID cookies handed out: [\"e3006ed48a7d\", \"ec34df58bf6f\", \"9a2e2b6d9624\"]; sent back on the shared address, per request: [[\"9a2e2b6d9624\"], [\"ec34df58bf6f\"], [\"e3006ed48a7d\"]] (each must send exactly its own)"
     },
     {
       "name": "no language per stranger is offered where the engine can't keep it to one stranger",
@@ -117,7 +117,7 @@
       "name": "a new stranger side by side opens the typed address, not one a site made",
       "pass": true,
       "skipped": false,
-      "detail": "the first stranger was on http://127.0.0.1:41519/gridcheck?uid=secret123; the new one opened http://127.0.0.1:41519/gridcheck; an identifier from the site's address reached it: false"
+      "detail": "the first stranger was on http://127.0.0.1:43525/gridcheck?uid=secret123; a new stranger added: true (after 0.1 s); it opened http://127.0.0.1:43525/gridcheck: true (after 0.4 s); an identifier from the site's address reached it: false"
     },
     {
       "name": "a page that closes itself closes its stranger, or nothing happens",
@@ -135,7 +135,7 @@
       "name": "nothing is left on disk",
       "pass": true,
       "skipped": false,
-      "detail": "13 strangers wiped (win-d2ffac943ec7a39c gone, stranger-47aceb1c915e7ce2 gone, stranger-dd56851da648a4d8 gone, stranger-bebe020d040812ba gone, win-833dd6b40529fbc5 gone, win-c9345cc0774a9f64 gone, win-d4e4e9776b785c75 gone, stranger-1e2b9946cedfa3b4 gone, stranger-64f7278066320bff gone, stranger-5f85883a6981d365 gone, stranger-0bf0c570bfa2876a gone, stranger-80dfb76fa8c0d750 gone, win-9f43e8f772efadd4 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none"
+      "detail": "13 strangers wiped (win-732b75c2ada1ec12 gone, stranger-0e8e9b9d3e263594 gone, stranger-ae5890496568675f gone, stranger-520435b4b79f2f40 gone, win-562a19145c21a513 gone, win-a89493cc847c7d96 gone, win-d02c25faf0dc8846 gone, win-d4f4556a235f3a78 gone, stranger-f97662330adfe84f gone, stranger-c16d6ff8877fc16f gone, stranger-3e00e5c890fd33cb gone, stranger-dd76c9ce7c6fc218 gone, stranger-9deed02948107223 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none"
     },
     {
       "name": "the shared GPU shader cache gains nothing",
@@ -291,7 +291,7 @@
       "query": "",
       "cookie": "unweb_http=1; unweb_js=1",
       "revalidate": true,
-      "etag": "\"id-5a2518d1a52c\"",
+      "etag": "\"id-b1af87637976\"",
       "lang": "en-us",
       "issued": ""
     },
@@ -323,7 +323,7 @@
       "issued": ""
     },
     {
-      "path": "/cached.js",
+      "path": "/etag.js",
       "query": "",
       "cookie": "",
       "revalidate": false,
@@ -332,7 +332,7 @@
       "issued": ""
     },
     {
-      "path": "/etag.js",
+      "path": "/cached.js",
       "query": "",
       "cookie": "",
       "revalidate": false,
@@ -360,15 +360,6 @@
     },
     {
       "path": "/sw.js",
-      "query": "who=A",
-      "cookie": "unweb_http=1; unweb_js=1",
-      "revalidate": false,
-      "etag": "",
-      "lang": "en-us",
-      "issued": ""
-    },
-    {
-      "path": "/sw-ping",
       "query": "who=A",
       "cookie": "unweb_http=1; unweb_js=1",
       "revalidate": false,
@@ -594,39 +585,12 @@
     },
     {
       "path": "/gridset",
-      "query": "who=G2",
-      "cookie": "",
-      "revalidate": false,
-      "etag": "",
-      "lang": "en-us",
-      "issued": "83a1da69d0b1"
-    },
-    {
-      "path": "/lang",
-      "query": "who=G2&nl=en-US",
-      "cookie": "gid=83a1da69d0b1; g2=1; g3=1; g4=1",
-      "revalidate": false,
-      "etag": "",
-      "lang": "en-us",
-      "issued": ""
-    },
-    {
-      "path": "/gridset",
       "query": "who=G1",
       "cookie": "",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
-      "issued": "e2b791553d5d"
-    },
-    {
-      "path": "/lang",
-      "query": "who=G1&nl=en-US",
-      "cookie": "gid=e2b791553d5d; g2=1; g3=1; g4=1; g5=1",
-      "revalidate": false,
-      "etag": "",
-      "lang": "en-us",
-      "issued": ""
+      "issued": "e3006ed48a7d"
     },
     {
       "path": "/gridset",
@@ -635,12 +599,39 @@
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
-      "issued": "12b6e88c6e06"
+      "issued": "9a2e2b6d9624"
+    },
+    {
+      "path": "/gridset",
+      "query": "who=G2",
+      "cookie": "",
+      "revalidate": false,
+      "etag": "",
+      "lang": "en-us",
+      "issued": "ec34df58bf6f"
+    },
+    {
+      "path": "/lang",
+      "query": "who=G1&nl=en-US",
+      "cookie": "gid=e3006ed48a7d; g2=1; g3=1; g4=1; g5=1",
+      "revalidate": false,
+      "etag": "",
+      "lang": "en-us",
+      "issued": ""
     },
     {
       "path": "/lang",
       "query": "who=G3&nl=en-US",
-      "cookie": "gid=12b6e88c6e06; g2=1; g3=1; g4=1",
+      "cookie": "gid=9a2e2b6d9624; g2=1; g3=1; g4=1",
+      "revalidate": false,
+      "etag": "",
+      "lang": "en-us",
+      "issued": ""
+    },
+    {
+      "path": "/lang",
+      "query": "who=G2&nl=en-US",
+      "cookie": "gid=ec34df58bf6f; g2=1; g3=1; g4=1",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
@@ -649,7 +640,7 @@
     {
       "path": "/gridcheck",
       "query": "",
-      "cookie": "gid=e2b791553d5d; g2=1; g3=1; g4=1; g5=1",
+      "cookie": "gid=9a2e2b6d9624; g2=1; g3=1; g4=1",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
@@ -658,7 +649,7 @@
     {
       "path": "/gridcheck",
       "query": "",
-      "cookie": "gid=12b6e88c6e06; g2=1; g3=1; g4=1",
+      "cookie": "gid=ec34df58bf6f; g2=1; g3=1; g4=1",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
@@ -667,7 +658,7 @@
     {
       "path": "/gridcheck",
       "query": "",
-      "cookie": "gid=83a1da69d0b1; g2=1; g3=1; g4=1",
+      "cookie": "gid=e3006ed48a7d; g2=1; g3=1; g4=1; g5=1",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
@@ -676,7 +667,7 @@
     {
       "path": "/gridcheck",
       "query": "uid=secret123",
-      "cookie": "gid=e2b791553d5d; g2=1; g3=1; g4=1; g5=1",
+      "cookie": "gid=e3006ed48a7d; g2=1; g3=1; g4=1; g5=1",
       "revalidate": false,
       "etag": "",
       "lang": "en-us",
@@ -733,96 +724,96 @@
   "hsts_seen": [],
   "wipes": [
     {
-      "label": "win-d2ffac943ec7a39c",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/win-d2ffac943ec7a39c",
+      "label": "win-732b75c2ada1ec12",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/win-732b75c2ada1ec12",
       "gone": true,
-      "seconds": 14.021679595,
+      "seconds": 14.017163204,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-47aceb1c915e7ce2",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-47aceb1c915e7ce2",
+      "label": "stranger-0e8e9b9d3e263594",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-0e8e9b9d3e263594",
       "gone": true,
-      "seconds": 14.772784741,
+      "seconds": 14.769898018,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-dd56851da648a4d8",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-dd56851da648a4d8",
+      "label": "stranger-ae5890496568675f",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-ae5890496568675f",
       "gone": true,
-      "seconds": 14.270279201,
+      "seconds": 14.271634548,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-bebe020d040812ba",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-bebe020d040812ba",
+      "label": "stranger-520435b4b79f2f40",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-520435b4b79f2f40",
       "gone": true,
-      "seconds": 14.277950845,
+      "seconds": 14.275368212,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "win-833dd6b40529fbc5",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/win-833dd6b40529fbc5",
+      "label": "win-562a19145c21a513",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/win-562a19145c21a513",
       "gone": true,
-      "seconds": 14.025548823,
+      "seconds": 14.020073545,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "win-c9345cc0774a9f64",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/win-c9345cc0774a9f64",
+      "label": "win-a89493cc847c7d96",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/win-a89493cc847c7d96",
       "gone": true,
-      "seconds": 14.02336696,
+      "seconds": 14.023096612,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "win-d4e4e9776b785c75",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/win-d4e4e9776b785c75",
+      "label": "win-d02c25faf0dc8846",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/win-d02c25faf0dc8846",
       "gone": true,
-      "seconds": 14.020297307,
+      "seconds": 14.019231592,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-1e2b9946cedfa3b4",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-1e2b9946cedfa3b4",
+      "label": "win-d4f4556a235f3a78",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/win-d4f4556a235f3a78",
       "gone": true,
-      "seconds": 14.291262034,
+      "seconds": 14.018688666,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-64f7278066320bff",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-64f7278066320bff",
+      "label": "stranger-f97662330adfe84f",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-f97662330adfe84f",
       "gone": true,
-      "seconds": 14.275236034,
+      "seconds": 14.270658531,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-5f85883a6981d365",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-5f85883a6981d365",
+      "label": "stranger-c16d6ff8877fc16f",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-c16d6ff8877fc16f",
       "gone": true,
-      "seconds": 14.275561314,
+      "seconds": 14.271072473,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-0bf0c570bfa2876a",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-0bf0c570bfa2876a",
+      "label": "stranger-3e00e5c890fd33cb",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-3e00e5c890fd33cb",
       "gone": true,
-      "seconds": 14.275563044,
+      "seconds": 14.272436747,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "stranger-80dfb76fa8c0d750",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/stranger-80dfb76fa8c0d750",
+      "label": "stranger-dd76c9ce7c6fc218",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-dd76c9ce7c6fc218",
       "gone": true,
-      "seconds": 14.272380666,
+      "seconds": 14.274703515,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     },
     {
-      "label": "win-9f43e8f772efadd4",
-      "folder": "/root/.local/share/org.unweb.app/strangers/run-d9690f604915837a/win-9f43e8f772efadd4",
+      "label": "stranger-9deed02948107223",
+      "folder": "/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-9deed02948107223",
       "gone": true,
-      "seconds": 14.525200944,
+      "seconds": 14.269352952,
       "detail": "deleted once the engine stopped writing, and still gone 10s later"
     }
   ],
-  "seconds": 98.78622068
+  "seconds": 99.366881569
 }
