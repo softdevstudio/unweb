@@ -18,10 +18,17 @@
 //!    frame's traces are judged only where A's control could see them.
 //! 4. A closes: its data folder must be deleted and stay deleted.
 //! 5. Stranger C, opened after A closed, opens /check: nothing.
-//! 6. Every stranger closes: no folder may be left, and no file may appear
+//! 6. The bar, strangers side by side, locations (through local HTTP and
+//!    SOCKS5 test proxies), saved setups and the compare strip; README.md
+//!    lists what each must show.
+//! 7. Every stranger closes: no folder may be left, and no file may appear
 //!    anywhere else in Unweb's data, local data or cache folders.
-//! 7. On Linux, the GPU shader caches every program shares (Mesa's and
-//!    NVIDIA's, in the user's cache folder) must not have changed.
+//! 8. On Linux, the GPU shader caches every program shares (Mesa's and
+//!    NVIDIA's, in the user's cache folder) must not have changed; and the
+//!    normal browser's folders must not have changed.
+//!
+//! A watchdog stops a run that is still going after 280 s and says which
+//! part it was in.
 //!
 //! Results go to `<dir>/selftest.json`; the exit code is 0 only if every
 //! check passed.
