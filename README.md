@@ -8,7 +8,7 @@ Unweb uses the web engine your system already has: WebView2 on Windows, WKWebVie
 
 ## Using it
 
-Download the installer for your system from the [latest release](https://github.com/softdevstudio/unweb/releases/latest). The builds aren't signed yet: on Windows, SmartScreen warns you (choose More info, then Run anyway); on macOS, right-click the app and choose Open the first time. Each release lists checksums in `SHA256SUMS`.
+Download the installer for your system from the [latest release](https://github.com/softdevstudio/unweb/releases/latest). On a Mac, Unweb 0.3 and later need macOS 14 (Sonoma) or newer. The builds aren't signed yet: on Windows, SmartScreen warns you (choose More info, then Run anyway); on macOS, right-click the app and choose Open the first time. Each release lists checksums in `SHA256SUMS`.
 
 Each window has a bar at the top:
 
@@ -32,9 +32,9 @@ A link that asks for a new window opens in the same stranger, so it stays in tha
 
 ## Locations
 
-A stranger with a location sends everything through that proxy: pages, images, calls, frames, local addresses like `127.0.0.1` (which engines like to send direct), and the names it looks up, which the proxy resolves for it. If the proxy can't be reached, the stranger loads nothing; it never falls back to going direct. On macOS Unweb sets the proxy itself with Apple's fallback to going direct turned off; the self-test caught that fallback in action before. One exception on macOS: requests to your own computer (`127.0.0.1`, `localhost`) skip the proxy, because macOS's network layer sends them direct and an app can't change that. That traffic never leaves your computer, so no site learns your address from it. WebRTC is turned off in a stranger with a location, because it can reach the network around a proxy and show your own address.
+A stranger with a location sends everything through that proxy: pages, images, calls, frames, local addresses like `127.0.0.1` (which engines like to send direct), and the names it looks up, which the proxy resolves for it. If the proxy can't be reached, the stranger loads nothing; it never falls back to going direct. On macOS a connection goes direct when its proxy can't be reached, even when told not to (the self-test caught it). So there each stranger with a location goes through a small relay of its own inside Unweb, on `127.0.0.1`, which passes everything to your proxy; the relay is always there, so macOS has nothing to fall back from, and when your proxy is down the relay answers with an error. One exception on macOS: requests to your own computer (`127.0.0.1`, `localhost`) skip the proxy, because macOS's network layer sends them direct and an app can't change that. That traffic never leaves your computer, so no site learns your address from it. WebRTC is turned off in a stranger with a location, because it can reach the network around a proxy and show your own address.
 
-Unweb doesn't come with proxies. Use one you run or rent. HTTP proxies and SOCKS5 proxies work; proxies that ask for a user name and password don't, yet. On macOS a location needs macOS 14 or later.
+Unweb doesn't come with proxies. Use one you run or rent. HTTP proxies and SOCKS5 proxies work; proxies that ask for a user name and password don't, yet.
 
 Names are looked up by the proxy, not by your computer, for everything a stranger loads. Speculative lookups an engine makes on its own (to prefetch a link, say) were checked on Linux, where none happened; on Windows Unweb tells the engine to fail any lookup but the proxy's; on macOS they haven't been checked.
 

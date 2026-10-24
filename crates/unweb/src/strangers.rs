@@ -106,6 +106,9 @@ pub struct Strangers {
     /// of widgets arrives together.
     building: Mutex<()>,
     wipes: Mutex<Vec<Wipe>>,
+    /// macOS: each stranger with a location goes through a relay of its
+    /// own (relay.rs), stopped when the stranger closes.
+    relays: Mutex<HashMap<String, crate::relay::Relay>>,
     /// Wipes still running.
     pending: AtomicUsize,
 }
@@ -133,6 +136,7 @@ impl Strangers {
             busy: Mutex::new(std::collections::HashSet::new()),
             building: Mutex::new(()),
             wipes: Mutex::new(Vec::new()),
+            relays: Mutex::new(HashMap::new()),
             pending: AtomicUsize::new(0),
         }
     }
@@ -281,8 +285,17 @@ impl Strangers {
         if let Ok(mut l) = self.settings.lock() {
             l.insert(label.clone(), settings.clone());
         }
-        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &settings)
-        {
+        // What the engine is given: on macOS the stranger's relay in place
+        // of its proxy.
+        let engine = match self.engine_settings(&label, &settings) {
+            Ok(e) => e,
+            Err(e) => {
+                self.closed(&label);
+                return Err(e);
+            }
+        };
+        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &engine) {
+            self.stop_relay(&label);
             for v in [
                 crate::window::strip_label(&label),
                 crate::window::page_label(&label),
@@ -307,6 +320,35 @@ impl Strangers {
         }
         crate::window::show_address(app, win);
         Ok(label)
+    }
+
+    /// The settings the engine gets for stranger `label`. On macOS a location
+    /// becomes a relay of the stranger's own (see relay.rs).
+    fn engine_settings(&self, label: &str, settings: &Settings) -> tauri::Result<Settings> {
+        // UNWEB_RELAY=1 uses the relay on other systems too, to test it
+        // where macOS isn't at hand.
+        let relay_here =
+            cfg!(target_os = "macos") || std::env::var_os("UNWEB_RELAY").is_some_and(|v| v == "1");
+        if let (true, Some(l)) = (relay_here, &settings.location) {
+            let relay = crate::relay::Relay::start(l).map_err(tauri::Error::Io)?;
+            let url = relay.url();
+            if let Ok(mut r) = self.relays.lock() {
+                r.insert(label.to_string(), relay);
+            }
+            return Ok(Settings {
+                lang: settings.lang.clone(),
+                location: Some(url),
+            });
+        }
+        let _ = label;
+        Ok(settings.clone())
+    }
+
+    /// Stops stranger `label`'s relay, if it has one.
+    fn stop_relay(&self, label: &str) {
+        if let Ok(mut r) = self.relays.lock() {
+            r.remove(label);
+        }
     }
 
     /// Remembers the address typed in window `win`'s bar.
@@ -561,6 +603,7 @@ impl Strangers {
         if let Ok(mut c) = self.counts.lock() {
             c.remove(label);
         }
+        self.stop_relay(label);
         self.closed(label);
         if let Ok(mut b) = self.busy.lock() {
             b.remove(label);
@@ -597,6 +640,9 @@ impl Strangers {
             for t in &tiles {
                 c.remove(t);
             }
+        }
+        for t in &tiles {
+            self.stop_relay(t);
         }
         std::thread::scope(|s| {
             for t in &tiles {

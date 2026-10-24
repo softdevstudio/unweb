@@ -176,6 +176,10 @@ pub fn macos_no_failover(page: &tauri::Webview, location: &Url) -> Result<(), St
             let proxies: objc2::rc::Retained<
                 objc2_foundation::NSArray<objc2_foundation::NSObject>,
             > = objc2_foundation::NSArray::arrayWithObject(&*config);
+            // The array holds the config, and the config its endpoint; let
+            // go of the references made above.
+            drop(objc2::rc::Retained::from_raw(config));
+            drop(objc2::rc::Retained::from_raw(endpoint));
             wv.configuration().websiteDataStore().setValue_forKey(
                 Some(&proxies),
                 objc2_foundation::ns_string!("proxyConfigurations"),
