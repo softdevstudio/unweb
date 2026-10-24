@@ -15,7 +15,7 @@ Origin: YK decided on October 23, 2026 that Unweb copies Watchkeeper's core crat
 
 YK supplies the go-ahead, language choice, repositories and access. The agent handles code, tests, documentation, CI, automated releases, site work and upkeep. Answer questions without treating them as instructions to implement. Update Next only when YK approves a new step; record actual progress without inventing approval.
 
-Work on main only; main is the default branch. This CLAUDE.md is the sole plan and session handoff file. Do not create ROADMAP.md, RESUME.md or another status file. Session notes go in Where we are, never as files in docs/; docs/ holds reference material only. Pause and report after each session and wait for YK's go-ahead before the next.
+Work on main only; main is the default branch. This CLAUDE.md is the sole plan and session handoff file (AGENTS.md only points here, at YK's word, October 24, 2026). Do not create ROADMAP.md, RESUME.md or another status file. Session notes go in Where we are, never as files in docs/; docs/ holds reference material only. Pause and report after each session and wait for YK's go-ahead before the next.
 
 README.md is the manual and plain-language explainer. Reference documentation belongs in docs/ as Markdown. No Word or PDF. Keep LICENSE, NOTICE and THIRD_PARTY_LICENSES.md current (regenerate the last with scripts/third-party-licenses.py when dependencies change). Unweb is a separate project: never mix in code, names or content from unrelated projects (the one-time starter copy of Watchkeeper's core is the exception, and is Unweb's own code from then on). Do not discuss domain sale or domain value anywhere in project materials.
 
@@ -134,9 +134,33 @@ October 24, 2026, session 5 (site) done, at YK's word "go ahead":
 - Hugo couldn't be installed here (refused), so the site was checked by parsing front matter and checking every internal link and image; the live feed at unweb.org lists every post.
 - softdevstudio.com lists Unweb as the thirty-first project (data/studio.toml) with a note on 0.1.0 to 0.3.0; its CONTENT-PLAN.md has the brief, names, tag, footer, feeds row and session log row 2r.
 
-October 24, 2026, at YK's word (homepage image "kinda lame", more case studies; he chose a contrast screenshot and all four topics): unweb.org's home page image is now four strangers on a made-up headphone shop seeing four prices (returning, new, German and French proxies), and four more case studies went up (airline fare rising per look, search results reordered for a returning visitor, ad verification across four countries with a setup, both sides of a checkout A/B test). examples/case-studies/server.py serves the new pages and a third stand-in proxy (Spain, 8963). Seen while taking the screenshots and fixed at YK's word ("Yes"): on Linux, after a stranger's location was changed from its strip, every page in the window stopped painting (the engines still held the pages; Compare showed them). Each layout took every page out of the grid and put it back; linux_layout.rs now keeps each stranger's cell and only moves it, packing only new strangers and removing only closed ones. Checked by hand under Xvfb (two location changes, then Side by side, then a close) and the self-test passes (recorded). Left: after closing a stranger, a small stale patch can stay in another page's header until it repaints (seen under Xvfb, also before the fix). Released as 0.3.1 at YK's word ("Go").
+October 24, 2026, at YK's word (homepage image "kinda lame", more case studies; he chose a contrast screenshot and all four topics): unweb.org's home page image is now four strangers on a made-up headphone shop seeing four prices (returning, new, German and French proxies), and four more case studies went up (airline fare rising per look, search results reordered for a returning visitor, ad verification across four countries with a setup, both sides of a checkout A/B test). examples/case-studies/server.py serves the new pages and a third stand-in proxy (Spain, 8963). Seen while taking the screenshots and fixed at YK's word ("Yes"): on Linux, after a stranger's location was changed from its strip, every page in the window stopped painting (the engines still held the pages; Compare showed them). Each layout took every page out of the grid and put it back; linux_layout.rs now keeps each stranger's cell and only moves it, packing only new strangers and removing only closed ones. Checked by hand under Xvfb (two location changes, then Side by side, then a close) and the self-test passes (recorded). Left: after closing a stranger, a small stale patch can stay in another page's header until it repaints (seen under Xvfb, also before the fix). YK said "Go" to release it as 0.3.1; the release did not go out (see below).
 
-October 24, 2026, version 0.3.1 (the Linux layout fix): independent review in two rounds by a fresh reviewer with probes and gdb. Round 1: dropping a closed stranger's cell destroyed the webviews still in it, so a layout run with an out-of-date list could close a live stranger; fixed by detaching first and by reading the stranger list on the main thread when the layout runs (an empty list makes no grid). Round 2 confirmed both with gdb (no webview destroyed from the layout), found no deadlock risk and no regressions. Left, very low: a layout queued between forget_window and the window's destroy can leak one gtk::Grid; and if add_tile fails after a concurrent layout during a location change, the old stranger is put back with no cell (pre-existing). Self-test passes on Linux (recorded).
+October 24, 2026, version 0.3.1 (the Linux layout fix): independent review in two rounds by a fresh reviewer with probes and gdb. Round 1: dropping a closed stranger's cell destroyed the webviews still in it, so a layout run with an out-of-date list could close a live stranger; fixed by detaching first and by reading the stranger list on the main thread when the layout runs (an empty list makes no grid). Round 2 confirmed both with gdb (no webview destroyed from the layout), found no deadlock risk and no regressions. Left, very low: a layout queued between forget_window and the window's destroy can leak one gtk::Grid; and if add_tile fails after a concurrent layout during a location change, the old stranger is put back with no cell (pre-existing). Self-test passes on Linux (recorded); CI passed on all three at b4d2a7b. The release run failed at the Intel macOS installer build (the "Build installers" step; its log can't be read from the cloud session) while Linux, Windows and macOS arm64 built; the rerun was cancelled at YK's word ("Stop it"). v0.3.1 is not published; 0.3.0 is the latest release.
+
+## Gaps and to do
+
+Kept here for any agent working on this repository (Claude reads this file; AGENTS.md points other agents here). Update it when an item is done or found.
+
+Not done:
+- v0.3.1 (the Linux layout fix) is on main but not released. The release run failed at the Intel macOS "Build installers" step and the rerun was cancelled at YK's word. Main's version is 0.3.1 with no tag, so the next push that passes CI starts the release workflow again; commits meant not to release need [skip ci] until YK decides.
+- Cosmetic, Linux: after closing a stranger, a small stale patch can stay in another page's header until it repaints (seen under Xvfb).
+- Very low, Linux: a layout queued between linux_layout::forget_window and the window's destroy can leak one gtk::Grid.
+- Very low, pre-existing: if add_tile fails after a concurrent layout during a location change, the old stranger is put back with no cell and stays invisible.
+- HSTS check runs in CI only (the test CA can't be installed in the cloud workspace).
+- Site: unweb.org has never been built in the agent's workspace (Hugo install refused); it is checked by front matter and link checks, and the host's build is what is live. Two use examples next to seven case studies. The softdevstudio.com note covers 0.1.0 to 0.3.0 only.
+
+Stated gaps (in the README and on the site; not planned work):
+- macOS: a stranger whose proxy is down goes direct; loopback addresses skip the proxy; a location needs macOS 14.
+- Language per stranger on Windows only (WebKitGTK's setting is process-wide, WKWebView has one per app).
+- Proxies with a user name and password, and IPv6 proxy addresses, aren't supported.
+- Downloads are refused.
+- Driver shader caches on Windows and macOS can't be turned off.
+- A forced close skips the wipe; the next start cleans up.
+- Linux: a closed stranger's network process stays in memory (about 55 MB) until Unweb quits (Tauri issue 14626).
+- Three copies changing setups as the last one is deleted could lose one save.
+- A page can tell it runs in a Tauri app; its calls are refused.
+- A closed stranger's busy service worker on macOS may make one call in the first second.
 
 ## Next
 
