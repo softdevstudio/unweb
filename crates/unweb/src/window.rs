@@ -353,7 +353,35 @@ pub fn add_tile(
             });
         });
     }
-    #[cfg(not(target_os = "linux"))]
+    // WebView2: a page's window.close() makes wry destroy the page's own
+    // window. Close the stranger with it, as on Linux.
+    #[cfg(target_os = "windows")]
+    {
+        let close_app = app.clone();
+        let close_stranger = stranger.to_string();
+        let _ = page_view.with_webview(move |pv| unsafe {
+            use webview2_com::WindowCloseRequestedEventHandler;
+            if let Ok(core) = pv.controller().CoreWebView2() {
+                let mut token = 0i64;
+                let _ = core.add_WindowCloseRequested(
+                    &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                        let app = close_app.clone();
+                        let stranger = close_stranger.clone();
+                        std::thread::spawn(move || {
+                            if let Some(s) =
+                                app.try_state::<std::sync::Arc<crate::strangers::Strangers>>()
+                            {
+                                s.retire(&app, &stranger);
+                            }
+                        });
+                        Ok(())
+                    })),
+                    &mut token,
+                );
+            }
+        });
+    }
+    #[cfg(target_os = "macos")]
     let _ = page_view;
     Ok(())
 }
