@@ -95,6 +95,18 @@ struct Hit {
 struct Server {
     port: u16,
     hits: Arc<Mutex<Vec<Hit>>>,
+    /// The same site on this machine's network address, when it has one:
+    /// macOS sends its own loopback addresses past a proxy, so the location
+    /// checks there need an address that isn't loopback.
+    lan: Option<(std::net::IpAddr, u16)>,
+}
+
+/// This machine's address on its network (no packet is sent to find it).
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    s.connect(("192.0.2.1", 9)).ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 impl Server {
@@ -104,17 +116,30 @@ impl Server {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let hits = Arc::new(Mutex::new(Vec::new()));
-        let h = hits.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let h = h.clone();
-                let other = other.clone();
-                std::thread::spawn(move || {
-                    let _ = serve(stream, site, &h, &other);
-                });
+        let mut listeners = vec![listener];
+        let mut lan = None;
+        if site {
+            if let Some(ip) = lan_ip() {
+                if let Ok(l) = TcpListener::bind((ip, 0)) {
+                    lan = l.local_addr().ok().map(|a| (ip, a.port()));
+                    listeners.push(l);
+                }
             }
-        });
-        Ok(Server { port, hits })
+        }
+        for listener in listeners {
+            let h = hits.clone();
+            let other = other.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let h = h.clone();
+                    let other = other.clone();
+                    std::thread::spawn(move || {
+                        let _ = serve(stream, site, &h, &other);
+                    });
+                }
+            });
+        }
+        Ok(Server { port, hits, lan })
     }
 
     fn hits(&self) -> Vec<Hit> {
@@ -2099,6 +2124,10 @@ fn run(
     }
 }
 
+/// macOS's network layer sends a page's requests to this machine's own
+/// loopback addresses past a proxy (other systems can be told not to).
+const LOOPBACK_SKIPS_PROXY: bool = cfg!(target_os = "macos");
+
 /// Requests for stranger `who` on the location pages.
 fn proxied_hits(site: &Server, who: &str) -> Vec<Hit> {
     site.hits()
@@ -2167,11 +2196,32 @@ fn location_checks(
         lang: String::new(),
         location: loc(&format!("socks5://127.0.0.1:{}", p2.port)),
     };
+    // macOS sends its own loopback addresses past a proxy (see README), so
+    // there the HTTP-proxy stranger goes to this machine's network address.
+    let lan_url = site.lan.map(|(ip, port)| format!("http://{ip}:{port}"));
+    let l1_base = if LOOPBACK_SKIPS_PROXY {
+        match &lan_url {
+            Some(u) => u.clone(),
+            None => {
+                out.push(Check {
+                    skipped: true,
+                    ..check(
+                        through,
+                        std::env::var_os("CI").is_none(),
+                        "not run: this machine has no network address that isn't loopback".into(),
+                    )
+                });
+                return out;
+            }
+        }
+    } else {
+        site_url.to_string()
+    };
     let tiles = vec![
         // Through an HTTP proxy, to a local address, which engines like to
         // send direct.
         (
-            Url::parse(&format!("{site_url}/proxied?who=L1")).ok(),
+            Url::parse(&format!("{l1_base}/proxied?who=L1")).ok(),
             l1.clone(),
         ),
         // Through a SOCKS5 proxy, to a name only the proxy can look up.
@@ -2221,7 +2271,7 @@ fn location_checks(
         through,
         loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && direct3 && names_to_proxy && strip_shows,
         format!(
-            "HTTP proxy, local address: {n1} requests, all through the proxy: {all1}; SOCKS5 proxy, a name only the proxy knows: {n2} requests, all through the proxy: {all2}, the name sent to the proxy to look up: {names_to_proxy}; the stranger without a location: {} requests, none through a proxy: {direct3}; the strip shows the proxy: {strip_shows} ({shown:?})",
+            "HTTP proxy, {l1_base}: {n1} requests, all through the proxy: {all1}; SOCKS5 proxy, a name only the proxy knows: {n2} requests, all through the proxy: {all2}, the name sent to the proxy to look up: {names_to_proxy}; the stranger without a location: {} requests, none through a proxy: {direct3}; the strip shows the proxy: {strip_shows} ({shown:?})",
             h3.len()
         ),
     ));
@@ -2266,20 +2316,35 @@ fn location_checks(
         location: loc(&format!("http://127.0.0.1:{}", closed_port())),
     };
     let fails_closed = "a stranger whose proxy can't be reached loads nothing";
-    match strangers.open_window(
-        app,
-        vec![(
-            Url::parse(&format!("{site_url}/proxied?who=DOWN")).ok(),
-            down,
-        )],
-    ) {
+    // One stranger to a loopback address, one to this machine's network
+    // address (where it has one).
+    let mut down_tiles = vec![(
+        Url::parse(&format!("{site_url}/proxied?who=DOWN")).ok(),
+        down.clone(),
+    )];
+    if let Some(u) = &lan_url {
+        down_tiles.push((Url::parse(&format!("{u}/proxied?who=DOWNLAN")).ok(), down));
+    }
+    match strangers.open_window(app, down_tiles) {
         Ok((dwin, _)) => {
             std::thread::sleep(Duration::from_secs(8));
             let n = proxied_hits(site, "DOWN").len();
+            let n_lan = proxied_hits(site, "DOWNLAN").len();
+            let judged_loopback = !LOOPBACK_SKIPS_PROXY;
             out.push(check(
                 fails_closed,
-                n == 0 && loaded,
-                format!("requests that reached the site anyway: {n} (the same page through a working proxy loaded: {loaded})"),
+                (n == 0 || !judged_loopback)
+                    && n_lan == 0
+                    && (judged_loopback || lan_url.is_some())
+                    && loaded,
+                format!(
+                    "requests that reached the site anyway: to a loopback address {n}{}, to this machine's network address {}; the same page through a working proxy loaded: {loaded}",
+                    if judged_loopback { "" } else { " (this system sends loopback past any proxy, so not judged)" },
+                    match &lan_url {
+                        Some(_) => n_lan.to_string(),
+                        None => "not tried (no network address)".into(),
+                    }
+                ),
             ));
             close(app, strangers, &dwin);
         }
