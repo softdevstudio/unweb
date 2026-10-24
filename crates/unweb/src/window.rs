@@ -326,12 +326,33 @@ pub fn add_tile(
     // WebKitGTK can offer to save HTTP sign-in passwords in the system
     // keyring, which would outlive the stranger.
     #[cfg(target_os = "linux")]
-    let _ = page_view.with_webview(|pv| {
-        use webkit2gtk::{WebViewExt, WebsiteDataManagerExt};
-        if let Some(m) = pv.inner().website_data_manager() {
-            m.set_persistent_credential_storage_enabled(false);
-        }
-    });
+    {
+        let close_app = app.clone();
+        let close_stranger = stranger.to_string();
+        let _ = page_view.with_webview(move |pv| {
+            use webkit2gtk::{WebViewExt, WebsiteDataManagerExt};
+            if let Some(m) = pv.inner().website_data_manager() {
+                m.set_persistent_credential_storage_enabled(false);
+            }
+            // A page that calls window.close() takes its webview away (wry
+            // destroys it, and with it any other close handler). Close the
+            // stranger with it, as its strip's close button would, so its
+            // data goes and the window lays itself out again instead of
+            // keeping an empty tile. Unweb's own closes mark the stranger
+            // busy first, so this only acts when the page went by itself.
+            use gtk::prelude::WidgetExt;
+            pv.inner().connect_destroy(move |_| {
+                let app = close_app.clone();
+                let stranger = close_stranger.clone();
+                std::thread::spawn(move || {
+                    if let Some(s) = app.try_state::<std::sync::Arc<crate::strangers::Strangers>>()
+                    {
+                        s.retire(&app, &stranger);
+                    }
+                });
+            });
+        });
+    }
     #[cfg(not(target_os = "linux"))]
     let _ = page_view;
     Ok(())

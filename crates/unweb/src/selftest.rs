@@ -239,7 +239,20 @@ fn serve(
             extra.push_str(&format!(
                 "Set-Cookie: gid={issued}; Max-Age=3600; Path=/; HttpOnly\r\nSet-Cookie: g2=1; Max-Age=3600; Path=/\r\n"
             ));
-            ("200 OK", "text/html", GRIDSET.replace("{who}", &who))
+            // The first stranger is given one more, so a shared store would
+            // show in every count.
+            let extra_cookie = if who == "G1" {
+                "document.cookie = 'g5=1; max-age=3600; path=/';"
+            } else {
+                ""
+            };
+            (
+                "200 OK",
+                "text/html",
+                GRIDSET
+                    .replace("{who}", &who)
+                    .replace("/*extra*/", extra_cookie),
+            )
         }
         (true, "/gridcheck") | (true, "/lang") => (
             "200 OK",
@@ -282,6 +295,7 @@ fn random_tag() -> String {
 const GRIDSET: &str = r#"<!doctype html><title>gridset</title><p>gridset {who}</p><script>
 document.cookie = 'g3=1; max-age=3600; path=/';
 document.cookie = 'g4=1; max-age=3600; path=/';
+/*extra*/
 fetch('/lang?who={who}&nl=' + encodeURIComponent(navigator.language));
 </script>"#;
 
@@ -679,13 +693,22 @@ fn bar_checks(
         std::thread::sleep(Duration::from_secs(2));
         bar_urls.push(eval_string(app, &bar, "String(location.href)"));
     }
-    let bar_url = bar_urls.join(", then ");
+    // The same for the stranger's strip.
+    let _ = eval_string(
+        app,
+        &strip_label(w),
+        &format!("location.href = '{site_url}/barnav'; 'sent'"),
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    let strip_url = eval_string(app, &strip_label(w), "String(location.href)");
+    let bar_url = format!("{}; the strip shows {strip_url}", bar_urls.join(", then "));
     // WebView2 can send the request before the refusal cancels it; what
     // counts is that the bar never shows anything but itself.
     let bar_kept = bar_urls.iter().all(|u| u.ends_with("/bar.html"))
-        && bar_urls.iter().all(|u| !u.contains(&format!(":{port}/")));
+        && bar_urls.iter().all(|u| !u.contains(&format!(":{port}/")))
+        && strip_url.ends_with("/strip.html");
     out.push(check(
-        "nothing can load another page in the bar",
+        "nothing can load another page in the bar or a strip",
         bar_kept,
         format!(
             "after the bar was sent to another address it shows {bar_url}; requests the engine sent for that address before refusing it: {}",
@@ -699,11 +722,11 @@ fn bar_checks(
         app,
         &page_label(w),
         "(function(){var i=window.__TAURI_INTERNALS__;var tell=function(n,r){fetch('/cmd?name='+n+'&r='+r)};\
-         ['new_stranger','go','reload'].forEach(function(n){try{i.invoke(n,{text:'example.com'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
+         ['new_stranger','go','reload','back','forward','side_by_side','set_language','close_stranger'].forEach(function(n){try{i.invoke(n,{text:'example.com',lang:'de-DE'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
          return 'sent'})()",
     );
     let answered = wait_until(Instant::now() + Duration::from_secs(10), || {
-        site.hits().iter().filter(|h| h.path == "/cmd").count() >= 3
+        site.hits().iter().filter(|h| h.path == "/cmd").count() >= 8
     });
     let cmds: Vec<String> = site
         .hits()
@@ -741,6 +764,7 @@ fn bar_checks(
     out.push(check(
         "a page can't call the app, and its popups stay in the same stranger",
         answered
+            && cmds.len() == 8
             && cmds.iter().all(|q| q.contains("r=refused"))
             && popup_here
             && windows_after == windows_before
@@ -897,22 +921,23 @@ fn grid_checks(
             )
         })
         .collect();
-    let counts_right = labels.iter().all(|l| {
+    let counts_right = labels.iter().enumerate().all(|(i, l)| {
+        let want = if i == 0 { 5 } else { 4 };
         let c = strangers.count(l).unwrap_or_default();
-        c.this_site == 4
+        c.this_site == want
             && c.this_site_http_only == 1
             && eval_string(
                 app,
                 &strip_label(l),
                 "document.getElementById('cookies').textContent",
             )
-            .starts_with("4 cookies from 127.0.0.1")
+            .starts_with(&format!("{want} cookies from 127.0.0.1"))
     });
     out.push(check(
         "the cookie counter counts what each stranger was given",
         loaded && counts_right,
         format!(
-            "each stranger was given 4 cookies by the site (2 by the server, 1 of them HttpOnly, 2 by the page); {}",
+            "the site gave the first stranger 5 cookies and the others 4 (2 by the server, 1 of them HttpOnly, the rest by the page); {}",
             counted.join("; ")
         ),
     ));
@@ -999,11 +1024,11 @@ fn grid_checks(
         if LANGUAGE_PER_STRANGER {
             own_langs
         } else {
-            // What was asked for must not have reached any stranger.
+            // What was asked for must not have reached any stranger, in its
+            // requests or its page.
             found
                 .iter()
-                .all(|(h, _)| !starts(h, "de") && !starts(h, "fr"))
-                || found.iter().all(|(h, _)| h == &found[0].0)
+                .all(|(h, n)| !starts(h, "de") && !starts(h, "fr") && !starts(n, "de") && !starts(n, "fr"))
         },
         if LANGUAGE_PER_STRANGER {
             format!(
@@ -1101,7 +1126,82 @@ fn grid_checks(
             left.len()
         ),
     ));
+
+    // A site puts an identifier in its own address (here, the first
+    // stranger's page is sent to ?uid=...). Side by side must open the new
+    // stranger at the address typed in the bar, without it.
+    let first = labels[0].clone();
+    navigate_page(app, &first, &format!("{site_url}/gridcheck?uid=secret123"));
+    wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, &first).contains("uid=secret123")
+    });
+    let before_tiles = strangers.tiles(&win);
+    let before = site.hits().len();
+    bar_call(app, &win, "side_by_side", "{}");
+    let added = wait_until(Instant::now() + Duration::from_secs(20), || {
+        strangers.tiles(&win).len() > before_tiles.len()
+    });
+    let new_tile = strangers
+        .tiles(&win)
+        .into_iter()
+        .find(|t| !before_tiles.contains(t))
+        .unwrap_or_default();
+    let opened_at = wait_until(Instant::now() + Duration::from_secs(10), || {
+        page_address(app, &new_tile).contains("/gridcheck")
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    let new_address = page_address(app, &new_tile);
+    let leaked = new_address.contains("uid=")
+        || site.hits()[before..]
+            .iter()
+            .any(|h| h.query.contains("uid="));
+    out.push(check(
+        "a new stranger side by side opens the typed address, not one a site made",
+        added && opened_at && !leaked,
+        format!(
+            "the first stranger was on {}; the new one opened {new_address}; an identifier from the site's address reached it: {leaked}",
+            page_address(app, &first)
+        ),
+    ));
+
+    // A page that closes itself: its stranger closes with it (as its
+    // strip's close button would), or the engine ignores the call. A tile
+    // with no page in it must not be left behind.
+    let tiles_now = strangers.tiles(&win).len();
+    let _ = eval_string(app, &page_label(&new_tile), "window.close(); 'sent'");
+    let closed_itself = wait_until(Instant::now() + Duration::from_secs(60), || {
+        strangers
+            .wipes()
+            .iter()
+            .any(|w| w.label == new_tile && w.gone)
+    });
+    let still_there = !closed_itself && page_address(app, &new_tile).contains("/gridcheck");
+    out.push(check(
+        "a page that closes itself closes its stranger, or nothing happens",
+        (closed_itself && strangers.tiles(&win).len() == tiles_now - 1) || still_there,
+        if closed_itself {
+            format!(
+                "the stranger closed and its data was deleted; strangers left: {}",
+                strangers.tiles(&win).len()
+            )
+        } else if still_there {
+            "the engine ignored window.close(); the page is still there".to_string()
+        } else {
+            "the page went away but its stranger stayed open".to_string()
+        },
+    ));
     out
+}
+
+/// Sends the page of stranger `label` to `url` directly (as a site's own
+/// redirect would), not through the bar.
+fn navigate_page(app: &AppHandle, label: &str, url: &str) {
+    if let (Some(w), Ok(u)) = (
+        app.get_webview(&crate::window::page_label(label)),
+        Url::parse(url),
+    ) {
+        let _ = w.navigate(u);
+    }
 }
 
 /// Every trace a /check report can find, by key.

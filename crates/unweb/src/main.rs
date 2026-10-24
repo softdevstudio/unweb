@@ -83,7 +83,11 @@ fn stranger_for(strip: &tauri::Webview) -> Result<String, String> {
 #[tauri::command]
 async fn go(webview: tauri::Webview, text: String) -> Result<(), String> {
     let url = normalize_url(&text).ok_or("Type a web address, like example.com")?;
-    for p in pages_for(&webview)? {
+    let pages = pages_for(&webview)?;
+    if let Some(win) = window::window_of_bar(webview.label()) {
+        strangers_of(&webview)?.set_typed(&win, url.clone());
+    }
+    for p in pages {
         p.navigate(url.clone()).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -124,19 +128,16 @@ async fn new_stranger(webview: tauri::Webview) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Adds a stranger to this window, beside the others, at the address the
-/// first one shows.
+/// Adds a stranger to this window, beside the others, at the address last
+/// typed in the bar. Not at the address the others are on now: a site can
+/// put an identifier in its own address, and the new stranger would carry
+/// it.
 #[tauri::command]
 async fn side_by_side(webview: tauri::Webview) -> Result<(), String> {
     let win = window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
     let strangers = strangers_of(&webview)?;
     let app = webview.app_handle().clone();
-    let url = strangers
-        .tiles(&win)
-        .first()
-        .and_then(|t| app.get_webview(&window::page_label(t)))
-        .and_then(|p| p.url().ok())
-        .filter(|u| matches!(u.scheme(), "http" | "https"));
+    let url = strangers.typed(&win);
     strangers
         .add_tile(&app, &win, url, "", None)
         .map(|_| ())

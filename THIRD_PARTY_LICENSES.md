@@ -26,7 +26,7 @@ On each platform Unweb also uses the system's own web engine, which is not part 
 
 ## MIT/Apache-2.0
 
-11 crates: bitflags 1.3.2, bs58 0.5.1, foreign-types 0.5.0, foreign-types-macros 0.2.4, foreign-types-shared 0.3.1, ident_case 1.0.1, jni 0.21.1, json-patch 4.2.0, winapi 0.3.9, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0.
+13 crates: bitflags 1.3.2, bs58 0.5.1, foreign-types 0.5.0, foreign-types-macros 0.2.4, foreign-types-shared 0.3.1, ident_case 1.0.1, jni 0.21.1, json-patch 4.2.0, psl 2.1.245, psl-types 2.0.11, winapi 0.3.9, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0.
 
 ## Unlicense OR MIT
 

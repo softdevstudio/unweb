@@ -74,6 +74,17 @@ pub struct Strangers {
     langs: Mutex<HashMap<String, String>>,
     /// The latest cookie count of each open stranger.
     counts: Mutex<HashMap<String, unweb_core::CookieCount>>,
+    /// The address last typed in each window's bar (or given at start).
+    /// New strangers in that window open here, never at an address a site
+    /// sent a stranger to, which could carry an identifier.
+    typed: Mutex<HashMap<String, Url>>,
+    /// Strangers being closed or replaced, so a second request for the
+    /// same one is ignored.
+    busy: Mutex<std::collections::HashSet<String>>,
+    /// Held while a stranger's webviews are built, one stranger at a time:
+    /// the window's count can't run past four, and on Linux each new pair
+    /// of widgets arrives together.
+    building: Mutex<()>,
     wipes: Mutex<Vec<Wipe>>,
     /// Wipes still running.
     pending: AtomicUsize,
@@ -98,6 +109,9 @@ impl Strangers {
             windows: Mutex::new(HashMap::new()),
             langs: Mutex::new(HashMap::new()),
             counts: Mutex::new(HashMap::new()),
+            typed: Mutex::new(HashMap::new()),
+            busy: Mutex::new(std::collections::HashSet::new()),
+            building: Mutex::new(()),
             wipes: Mutex::new(Vec::new()),
             pending: AtomicUsize::new(0),
         }
@@ -185,6 +199,9 @@ impl Strangers {
             self.window_closed(&win);
             return Err(e);
         }
+        if let Some(Some(u)) = tiles.first().map(|t| t.0.clone()) {
+            self.set_typed(&win, u);
+        }
         let mut made = Vec::new();
         for (url, lang) in tiles.into_iter().take(count) {
             match self.add_tile(app, &win, url, &lang, None) {
@@ -214,6 +231,7 @@ impl Strangers {
             _ => String::new(),
         };
         let window = app.get_window(win).ok_or(tauri::Error::WindowNotFound)?;
+        let _building = self.building.lock();
         if self.tiles(win).len() >= crate::window::MAX_TILES {
             return Err(tauri::Error::Io(std::io::Error::other(
                 "this window has four strangers already",
@@ -255,6 +273,26 @@ impl Strangers {
         }
         crate::window::show_address(app, win);
         Ok(label)
+    }
+
+    /// Remembers the address typed in window `win`'s bar.
+    pub fn set_typed(&self, win: &str, url: Url) {
+        if let Ok(mut t) = self.typed.lock() {
+            t.insert(win.to_string(), url);
+        }
+    }
+
+    /// The address last typed in window `win`'s bar, if any.
+    pub fn typed(&self, win: &str) -> Option<Url> {
+        self.typed.lock().ok().and_then(|t| t.get(win).cloned())
+    }
+
+    /// Marks `label` busy; false when it already was.
+    fn claim(&self, label: &str) -> bool {
+        self.busy
+            .lock()
+            .map(|mut b| b.insert(label.to_string()))
+            .unwrap_or(false)
     }
 
     /// The strangers of window `win`, in their order on screen.
@@ -326,11 +364,15 @@ impl Strangers {
         lang: &str,
     ) -> tauri::Result<String> {
         let win = self.window_of(label).ok_or(tauri::Error::WebviewNotFound)?;
+        if !self.claim(label) {
+            return Err(tauri::Error::Io(std::io::Error::other(
+                "this stranger is already being replaced",
+            )));
+        }
         let at = self.tiles(&win).iter().position(|t| t == label);
-        let url = app
-            .get_webview(&crate::window::page_label(label))
-            .and_then(|p| p.url().ok())
-            .filter(|u| matches!(u.scheme(), "http" | "https"));
+        // The address typed in the bar, not the one the stranger is on: a
+        // site can put an identifier in its own address.
+        let url = self.typed(&win);
         // Room for the new stranger first: take the old one out of the
         // window's list (it stays on screen until it is closed below).
         if let Ok(mut w) = self.windows.lock() {
@@ -340,6 +382,7 @@ impl Strangers {
         }
         let made = self.add_tile(app, &win, url, lang, at);
         self.retire_tile(app, label);
+        crate::window::layout(app, &win);
         made
     }
 
@@ -380,8 +423,21 @@ impl Strangers {
         if label.starts_with(crate::window::WINDOW_PREFIX) {
             return self.retire_window(app, label);
         }
-        match self.window_of(label) {
-            Some(win) if self.tiles(&win).len() <= 1 => self.retire_window(app, &win),
+        if !self.claim(label) {
+            return;
+        }
+        // Decide and take the stranger out of its window in one step, so
+        // two closes at once can't both leave the window with none.
+        let decision = self.windows.lock().ok().and_then(|mut w| {
+            let (win, tiles) = w.iter_mut().find(|(_, t)| t.iter().any(|x| x == label))?;
+            if tiles.len() <= 1 {
+                Some((win.clone(), true))
+            } else {
+                Some((win.clone(), false))
+            }
+        });
+        match decision {
+            Some((win, true)) => self.retire_window(app, &win),
             Some(_) => self.retire_tile(app, label),
             None => {}
         }
@@ -412,13 +468,13 @@ impl Strangers {
     /// Closes one stranger of a window that keeps others, and deletes its
     /// data. Blocks until the data is gone.
     pub fn retire_tile(&self, app: &AppHandle, label: &str) {
-        self.clear_stranger(app, label);
         let win = self.window_of(label);
         if let (Some(win), Ok(mut w)) = (&win, self.windows.lock()) {
             if let Some(tiles) = w.get_mut(win) {
                 tiles.retain(|t| t != label);
             }
         }
+        self.clear_stranger(app, label);
         for v in [
             crate::window::strip_label(label),
             crate::window::page_label(label),
@@ -435,12 +491,18 @@ impl Strangers {
             c.remove(label);
         }
         self.closed(label);
+        if let Ok(mut b) = self.busy.lock() {
+            b.remove(label);
+        }
     }
 
     /// Closes a whole window. Its strangers' data and its own folder are
     /// deleted once the window is gone (see `window_closed`).
     pub fn retire_window(&self, app: &AppHandle, win: &str) {
         for t in self.tiles(win) {
+            // Busy from now on: the page going away with the window is not
+            // a page closing itself.
+            self.claim(&t);
             self.clear_stranger(app, &t);
         }
         if let Some(w) = app.get_window(win) {
