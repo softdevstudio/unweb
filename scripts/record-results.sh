@@ -33,9 +33,18 @@ log="$out/checks.log"
 # read through the API without downloading logs or artifacts.
 annotate() { # level title file
   [ -n "${GITHUB_ACTIONS:-}" ] || return 0
-  local body
-  body=$(sed -e 's/%/%25/g' "$3" | tail -n 40 | awk 'BEGIN{ORS="%0A"} {print}')
-  echo "::$1 title=$2 ($os)::$body"
+  # GitHub cuts long annotations short and keeps ten of each level per
+  # step, so the lines go out five at a time, each line cut at 700
+  # characters (the full results are in the uploaded files).
+  local part=0 chunk
+  local lines
+  lines=$(tail -n 50 "$3" | cut -c1-700 | sed -e 's/%/%25/g')
+  while [ -n "$lines" ] && [ "$part" -lt 10 ]; do
+    part=$((part + 1))
+    chunk=$(printf '%s\n' "$lines" | head -n 5 | awk 'BEGIN{ORS="%0A"} {print}')
+    lines=$(printf '%s\n' "$lines" | tail -n +6)
+    echo "::$1 title=$2 ($os) $part::$chunk"
+  done
 }
 
 step() {
