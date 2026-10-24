@@ -88,6 +88,7 @@ else
 fi
 set -e
 grep -E '^(PASS|FAIL|SKIP|selftest)' "$raw" | tee -a "$log" || true
+results=$(grep -cE '^(PASS|FAIL|SKIP|selftest)' "$raw" || true)
 
 # After Unweb has exited, none of the folders it or its engine could use may
 # be left, not even empty.
@@ -99,8 +100,9 @@ grep -E '^(PASS|FAIL|SKIP|selftest)' "$raw" > "$out/selftest.txt" || true
 if [ "$status" -eq 0 ]; then
   annotate notice "selftest passed" "$out/selftest.txt"
 else
-  if [ ! -s "$out/selftest.txt" ]; then
-    { echo "no self-test result; exit code $status; raw output:"; tail -n 30 "$raw"; } > "$out/selftest.txt"
+  if [ "${results:-0}" -eq 0 ]; then
+    # The self-test printed no result (a crash): show how it ended.
+    { echo "no self-test result; exit code $status; raw output:"; tail -n 30 "$raw"; } >> "$out/selftest.txt"
   fi
   annotate error "selftest failed" "$out/selftest.txt"
 fi
