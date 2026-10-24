@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Unweb stranger</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f6f7f9; --fg: #1e293b; --muted: #64748b; --line: #d5dbe3; --field: #ffffff; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #171c26; --fg: #e2e8f0; --muted: #94a3b8; --line: #2c3646; --field: #111722; } }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 8px; box-sizing: border-box;
+           background: var(--bg); color: var(--fg); font: 12px system-ui, sans-serif;
+           border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); }
+    select { height: 22px; max-width: 150px; font: inherit; color: var(--fg); background: var(--field);
+             border: 1px solid var(--line); border-radius: 4px; }
+    #cookies { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+    #cookies b { color: var(--fg); font-weight: 600; }
+    #note { color: #b91c1c; white-space: nowrap; }
+    button { width: 22px; height: 22px; border: 1px solid transparent; border-radius: 4px; background: none;
+             color: var(--muted); font-size: 15px; line-height: 1; cursor: pointer; padding: 0; }
+    button:hover { border-color: var(--line); color: var(--fg); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <select id="lang" aria-label="This stranger's language" title="This stranger's language. Changing it opens a new stranger in its place."></select>
+  <span id="cookies" role="status" title="Cookies in this stranger's store, counted against the site it shows">No cookies yet</span>
+  <span id="note" role="status"></span>
+  <button id="close" title="Close this stranger and delete everything it collected" aria-label="Close this stranger" hidden>&#215;</button>
+  <script src="strip.js"></script>
+</body>
+</html>

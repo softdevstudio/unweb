@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-side-by-side"
+description = "Enables the side_by_side command without any pre-configured scope."
+commands.allow = ["side_by_side"]
+
+[[permission]]
+identifier = "deny-side-by-side"
+description = "Denies the side_by_side command without any pre-configured scope."
+commands.deny = ["side_by_side"]

@@ -15,6 +15,7 @@ path = "src/main.rs"
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
+unweb-core = { path = "../unweb-core" }
 # "unstable" enables two webviews in one window (the bar and the page).
 tauri = { version = "2.12", features = ["unstable"] }
 serde = { version = "1", features = ["derive"] }

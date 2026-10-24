@@ -1,0 +1,13 @@
+[package]
+name = "unweb-core"
+description = "What Unweb counts for each stranger: sites and the cookies a stranger was given. No UI, no Tauri."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+psl = "2.1"
+serde = { version = "1", features = ["derive"] }
+url = "2"

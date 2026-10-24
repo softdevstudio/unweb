@@ -2,10 +2,12 @@
 
 //! Unweb: a tiny browser where every visit is a first visit.
 //!
-//! Every window is a stranger: it starts with no history, no logins and no
-//! cookies, keeps everything it collects in a throwaway store of its own,
-//! and when it closes that store is deleted. See strangers.rs.
+//! Every stranger starts with no history, no logins and no cookies, keeps
+//! everything it collects in a throwaway store of its own, and when it
+//! closes that store is deleted. A window shows one to four strangers side
+//! by side under one bar. See strangers.rs and window.rs.
 
+mod counter;
 mod hsts;
 #[cfg(target_os = "linux")]
 mod linux_layout;
@@ -18,7 +20,8 @@ use std::sync::Arc;
 
 use tauri::{Manager, RunEvent, Url, WindowEvent};
 
-use strangers::{Strangers, PREFIX};
+use strangers::Strangers;
+use window::WINDOW_PREFIX;
 
 /// Turns what someone typed into an address: `example.com` becomes
 /// `https://example.com/`. Only http and https open in a stranger.
@@ -41,51 +44,130 @@ pub fn normalize_url(input: &str) -> Option<Url> {
     }
 }
 
-/// The page webview that belongs to the bar `bar` (a bar can only steer its
-/// own stranger's page).
-fn page_for(bar: &tauri::Webview) -> Result<tauri::Webview, String> {
-    let window = window::window_of(bar.label()).ok_or("not a stranger's bar")?;
-    bar.app_handle()
-        .get_webview(&window::page_label(&window))
-        .ok_or_else(|| "this stranger is gone".to_string())
+fn strangers_of(webview: &tauri::Webview) -> Result<Arc<Strangers>, String> {
+    Ok(webview
+        .app_handle()
+        .try_state::<Arc<Strangers>>()
+        .ok_or("not ready")?
+        .inner()
+        .clone())
 }
 
-/// The bar's address field: opens what was typed in this stranger.
+/// The pages of the window whose bar is `bar` (a bar can only steer its own
+/// window's strangers).
+fn pages_for(bar: &tauri::Webview) -> Result<Vec<tauri::Webview>, String> {
+    let win = window::window_of_bar(bar.label()).ok_or("not a window's bar")?;
+    let strangers = strangers_of(bar)?;
+    let pages: Vec<tauri::Webview> = strangers
+        .tiles(&win)
+        .iter()
+        .filter_map(|t| bar.app_handle().get_webview(&window::page_label(t)))
+        .collect();
+    if pages.is_empty() {
+        return Err("this window has no strangers".into());
+    }
+    Ok(pages)
+}
+
+/// The stranger whose strip is `strip` (a strip can only change its own
+/// stranger).
+fn stranger_for(strip: &tauri::Webview) -> Result<String, String> {
+    match window::stranger_of(strip.label()) {
+        Some(s) if strip.label().starts_with("strip-") => Ok(s),
+        _ => Err("not a stranger's strip".into()),
+    }
+}
+
+/// The bar's address field: opens what was typed in every stranger of
+/// this window.
 #[tauri::command]
 async fn go(webview: tauri::Webview, text: String) -> Result<(), String> {
     let url = normalize_url(&text).ok_or("Type a web address, like example.com")?;
-    page_for(&webview)?.navigate(url).map_err(|e| e.to_string())
+    for p in pages_for(&webview)? {
+        p.navigate(url.clone()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn back(webview: tauri::Webview) -> Result<(), String> {
-    nav::step(&page_for(&webview)?, nav::Step::Back)
+    for p in pages_for(&webview)? {
+        nav::step(&p, nav::Step::Back)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn forward(webview: tauri::Webview) -> Result<(), String> {
-    nav::step(&page_for(&webview)?, nav::Step::Forward)
+    for p in pages_for(&webview)? {
+        nav::step(&p, nav::Step::Forward)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn reload(webview: tauri::Webview) -> Result<(), String> {
-    page_for(&webview)?.reload().map_err(|e| e.to_string())
+    for p in pages_for(&webview)? {
+        p.reload().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
-/// Opens another stranger, with a store of its own.
+/// Opens another window with a new stranger in it.
 #[tauri::command]
 async fn new_stranger(webview: tauri::Webview) -> Result<(), String> {
-    window::window_of(webview.label()).ok_or("not a stranger's bar")?;
+    window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
     let app = webview.app_handle().clone();
-    let strangers = app
-        .try_state::<Arc<Strangers>>()
-        .ok_or("not ready")?
-        .inner()
-        .clone();
-    strangers
+    strangers_of(&webview)?
         .open(&app, None)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Adds a stranger to this window, beside the others, at the address the
+/// first one shows.
+#[tauri::command]
+async fn side_by_side(webview: tauri::Webview) -> Result<(), String> {
+    let win = window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
+    let strangers = strangers_of(&webview)?;
+    let app = webview.app_handle().clone();
+    let url = strangers
+        .tiles(&win)
+        .first()
+        .and_then(|t| app.get_webview(&window::page_label(t)))
+        .and_then(|p| p.url().ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"));
+    strangers
+        .add_tile(&app, &win, url, "", None)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// A strip's language menu: gives its stranger another language, which
+/// means a new stranger in its place (see Strangers::change_language).
+#[tauri::command]
+async fn set_language(webview: tauri::Webview, lang: String) -> Result<(), String> {
+    let stranger = stranger_for(&webview)?;
+    if !window::LANGUAGE_PER_STRANGER {
+        return Err(window::NO_LANGUAGE_REASON.into());
+    }
+    let lang = window::known_language(&lang).ok_or("not a language Unweb offers")?;
+    let app = webview.app_handle().clone();
+    strangers_of(&webview)?
+        .change_language(&app, &stranger, lang)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// A strip's close button: closes its stranger (its whole window when it is
+/// the only one).
+#[tauri::command]
+async fn close_stranger(webview: tauri::Webview) -> Result<(), String> {
+    let stranger = stranger_for(&webview)?;
+    let app = webview.app_handle().clone();
+    let strangers = strangers_of(&webview)?;
+    std::thread::spawn(move || strangers.retire(&app, &stranger));
+    Ok(())
 }
 
 /// The first command-line argument that is a web address.
@@ -125,7 +207,10 @@ fn main() {
             back,
             forward,
             reload,
-            new_stranger
+            new_stranger,
+            side_by_side,
+            set_language,
+            close_stranger
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -137,6 +222,7 @@ fn main() {
                 Some(dir) => Some(selftest::start(&handle, strangers.clone(), dir.clone())?),
                 None => start_url_from_args(),
             };
+            counter::start(handle.clone());
             strangers.open(&handle, start)?;
             Ok(())
         })
@@ -153,20 +239,18 @@ fn main() {
             label,
             event: WindowEvent::Destroyed,
             ..
-        } if label.starts_with(PREFIX) => {
+        } if label.starts_with(WINDOW_PREFIX) => {
             if let Some(s) = holder.get().cloned() {
-                std::thread::spawn(move || {
-                    let _ = s.closed(&label);
-                });
+                std::thread::spawn(move || s.window_closed(&label));
             }
         }
-        // Closing a stranger goes through `retire`, which clears the
-        // engine's data first.
+        // Closing a window goes through `retire`, which clears the engine's
+        // data first.
         RunEvent::WindowEvent {
             label,
             event: WindowEvent::CloseRequested { api, .. },
             ..
-        } if label.starts_with(PREFIX) => {
+        } if label.starts_with(WINDOW_PREFIX) => {
             api.prevent_close();
             if let Some(s) = holder.get().cloned() {
                 let handle = _app.clone();

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-stranger"
+description = "Enables the close_stranger command without any pre-configured scope."
+commands.allow = ["close_stranger"]
+
+[[permission]]
+identifier = "deny-close-stranger"
+description = "Denies the close_stranger command without any pre-configured scope."
+commands.deny = ["close_stranger"]

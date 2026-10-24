@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "strip",
+  "description": "The strip above each stranger: its language and its close button, for that stranger only.",
+  "webviews": ["strip-*"],
+  "permissions": [
+    "allow-set-language",
+    "allow-close-stranger"
+  ]
+}

@@ -62,6 +62,10 @@ struct Hit {
     /// When the request arrived.
     #[serde(skip)]
     at: Option<Instant>,
+    /// The Accept-Language header.
+    lang: String,
+    /// The ID cookie this answer hands out (/gridset), if any.
+    issued: String,
 }
 
 #[derive(Clone)]
@@ -131,6 +135,7 @@ fn serve(
     let mut cookie = String::new();
     let mut revalidate = false;
     let mut etag = String::new();
+    let mut lang = String::new();
     let mut length = 0usize;
     loop {
         let mut h = String::new();
@@ -140,6 +145,9 @@ fn serve(
         let lower = h.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("cookie:") {
             cookie = v.trim().to_string();
+        }
+        if let Some(v) = lower.strip_prefix("accept-language:") {
+            lang = v.trim().to_string();
         }
         if lower.starts_with("if-none-match:") || lower.starts_with("if-modified-since:") {
             revalidate = true;
@@ -162,6 +170,12 @@ fn serve(
         Some((p, q)) => (p.to_string(), q.to_string()),
         None => (target.clone(), String::new()),
     };
+    // Each stranger in the grid test gets an ID cookie of its own.
+    let issued = if site && path == "/gridset" {
+        random_tag()
+    } else {
+        String::new()
+    };
     if let Ok(mut h) = hits.lock() {
         h.push(Hit {
             path: path.clone(),
@@ -170,6 +184,8 @@ fn serve(
             revalidate,
             etag: etag.clone(),
             at: Some(Instant::now()),
+            lang,
+            issued: issued.clone(),
         });
     }
     let other = other.lock().map(|o| o.clone()).unwrap_or_default();
@@ -216,6 +232,20 @@ fn serve(
             "text/html",
             format!("<!doctype html><title>{path}</title><p>{path}</p>"),
         ),
+        // Four cookies for the counter: two from the server (one hidden
+        // from scripts), two written by the page. It also reports the
+        // language the page sees.
+        (true, "/gridset") => {
+            extra.push_str(&format!(
+                "Set-Cookie: gid={issued}; Max-Age=3600; Path=/; HttpOnly\r\nSet-Cookie: g2=1; Max-Age=3600; Path=/\r\n"
+            ));
+            ("200 OK", "text/html", GRIDSET.replace("{who}", &who))
+        }
+        (true, "/gridcheck") | (true, "/lang") => (
+            "200 OK",
+            "text/html",
+            "<!doctype html><title>grid</title><p>grid</p>".to_string(),
+        ),
         // A page that takes over the page's own Back and Forward.
         (true, "/trap") => ("200 OK", "text/html", TRAP.to_string()),
         _ => ("204 No Content", "text/plain", String::new()),
@@ -248,6 +278,12 @@ fn random_tag() -> String {
     let _ = getrandom::fill(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
+
+const GRIDSET: &str = r#"<!doctype html><title>gridset</title><p>gridset {who}</p><script>
+document.cookie = 'g3=1; max-age=3600; path=/';
+document.cookie = 'g4=1; max-age=3600; path=/';
+fetch('/lang?who={who}&nl=' + encodeURIComponent(navigator.language));
+</script>"#;
 
 const TRAP: &str = r#"<!doctype html><title>trap</title><script>
 history.back = function () { fetch('/trapped?how=back'); };
@@ -561,56 +597,46 @@ fn bar_checks(
     site_url: &str,
     w: &str,
 ) -> Vec<Check> {
-    use crate::window::{bar_label, page_label, BAR_HEIGHT};
+    use crate::window::{bar_label, page_label, strip_label, BAR_HEIGHT, STRIP_HEIGHT};
     let mut out = Vec::new();
+    // The bar belongs to the stranger's window.
+    let win = strangers.window_of(w).unwrap_or_default();
+    let bar = bar_label(&win);
 
     // The bar shows the page's address.
     let page_url = page_address(app, w);
     let shows = wait_until(Instant::now() + Duration::from_secs(5), || {
-        eval_string(
-            app,
-            &bar_label(w),
-            "document.getElementById('address').value",
-        ) == page_url
+        eval_string(app, &bar, "document.getElementById('address').value") == page_url
     });
     out.push(check(
         "the bar shows the page's address",
         shows && page_url.starts_with("http"),
         format!(
             "page at {page_url}; bar shows {:?}",
-            eval_string(
-                app,
-                &bar_label(w),
-                "document.getElementById('address').value"
-            )
+            eval_string(app, &bar, "document.getElementById('address').value")
         ),
     ));
 
     // Typing an address, then Back and Forward past a page that took over
     // history.back, history.go and popstate.
     let before = hits_on(site, "/nav1");
-    bar_call(app, w, "go", &format!("{{ text: '{site_url}/nav1' }}"));
+    bar_call(app, &win, "go", &format!("{{ text: '{site_url}/nav1' }}"));
     let went = wait_until(Instant::now() + Duration::from_secs(10), || {
         page_address(app, w).ends_with("/nav1") && hits_on(site, "/nav1") > before
     });
-    bar_call(app, w, "go", &format!("{{ text: '{site_url}/trap' }}"));
+    bar_call(app, &win, "go", &format!("{{ text: '{site_url}/trap' }}"));
     let trapped_page = wait_until(Instant::now() + Duration::from_secs(10), || {
         page_address(app, w).ends_with("/trap")
     });
     std::thread::sleep(Duration::from_millis(500));
-    bar_call(app, w, "back", "{}");
+    bar_call(app, &win, "back", "{}");
     let backed = wait_until(Instant::now() + Duration::from_secs(10), || {
         page_address(app, w).ends_with("/nav1")
     });
     let bar_after_back = wait_until(Instant::now() + Duration::from_secs(5), || {
-        eval_string(
-            app,
-            &bar_label(w),
-            "document.getElementById('address').value",
-        )
-        .ends_with("/nav1")
+        eval_string(app, &bar, "document.getElementById('address').value").ends_with("/nav1")
     });
-    bar_call(app, w, "forward", "{}");
+    bar_call(app, &win, "forward", "{}");
     let forwarded = wait_until(Instant::now() + Duration::from_secs(10), || {
         page_address(app, w).ends_with("/trap")
     });
@@ -622,7 +648,7 @@ fn bar_checks(
         .map(|h| h.query.clone())
         .collect::<Vec<_>>();
     let reload_before = site.hits().iter().filter(|h| h.path == "/trap").count();
-    bar_call(app, w, "reload", "{}");
+    bar_call(app, &win, "reload", "{}");
     let reloaded = wait_until(Instant::now() + Duration::from_secs(10), || {
         site.hits().iter().filter(|h| h.path == "/trap").count() > reload_before
     });
@@ -649,13 +675,9 @@ fn bar_checks(
         format!("{site_url}/barnav"),
         format!("http://tauri.localhost:{port}/barnav"),
     ] {
-        let _ = eval_string(
-            app,
-            &bar_label(w),
-            &format!("location.href = '{target}'; 'sent'"),
-        );
+        let _ = eval_string(app, &bar, &format!("location.href = '{target}'; 'sent'"));
         std::thread::sleep(Duration::from_secs(2));
-        bar_urls.push(eval_string(app, &bar_label(w), "String(location.href)"));
+        bar_urls.push(eval_string(app, &bar, "String(location.href)"));
     }
     let bar_url = bar_urls.join(", then ");
     // WebView2 can send the request before the refusal cancels it; what
@@ -694,11 +716,17 @@ fn bar_checks(
     let seen_label = eval_string(
         app,
         &page_label(w),
-        "(function(){try{return String(window.__TAURI_INTERNALS__.metadata.currentWindow.label)}catch(e){return ''}})()",
+        "(function(){try{var m=window.__TAURI_INTERNALS__.metadata;return String(m.currentWindow.label)+' '+String(m.currentWebview.label)}catch(e){return ''}})()",
     );
-    let label_random = seen_label
-        .strip_prefix(crate::strangers::PREFIX)
-        .is_some_and(|r| r.len() == 16 && r.bytes().all(|b| b.is_ascii_hexdigit()));
+    let random16 = |l: &str, prefix: &str| {
+        l.strip_prefix(prefix)
+            .is_some_and(|r| r.len() == 16 && r.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let label_random = {
+        let mut it = seen_label.split(' ');
+        let (wl, pl) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+        random16(wl, crate::window::WINDOW_PREFIX) && random16(pl, "page-")
+    };
     let popup_before = hits_on(site, "/popup");
     let _ = eval_string(
         app,
@@ -718,7 +746,7 @@ fn bar_checks(
             && windows_after == windows_before
             && label_random,
         format!(
-            "the page's calls: {cmds:?}; window.open opened in this stranger's page: {popup_here}; windows before {windows_before}, after {windows_after}; the window name the page can read is random: {label_random} ({seen_label})"
+            "the page's calls: {cmds:?}; window.open opened in this stranger's page: {popup_here}; windows before {windows_before}, after {windows_after}; the window and page names the page can read are random: {label_random} ({seen_label})"
         ),
     ));
 
@@ -727,29 +755,34 @@ fn bar_checks(
     let mut sizes = Vec::new();
     let mut fits = true;
     for size in [None, Some((900.0, 600.0))] {
-        if let (Some((sw, sh)), Some(win)) = (size, app.get_window(w)) {
-            let _ = win.set_size(tauri::LogicalSize::new(sw, sh));
+        if let (Some((sw, sh)), Some(window)) = (size, app.get_window(&win)) {
+            let _ = window.set_size(tauri::LogicalSize::new(sw, sh));
             std::thread::sleep(Duration::from_millis(1200));
         }
-        let (ww, wh) = window_size(app, w);
-        let (bw, bh) = inner_size_of(app, &bar_label(w));
+        let (ww, wh) = window_size(app, &win);
+        let (bw, bh) = inner_size_of(app, &bar);
+        let (sw, sh) = inner_size_of(app, &strip_label(w));
         let (pw, ph) = inner_size_of(app, &page_label(w));
         let ok = (bh - BAR_HEIGHT).abs() <= 2.0
-            && (ph - (wh - BAR_HEIGHT)).abs() <= 3.0
+            && (sh - STRIP_HEIGHT).abs() <= 2.0
+            && (ph - (wh - BAR_HEIGHT - STRIP_HEIGHT)).abs() <= 3.0
             && (bw - ww).abs() <= 3.0
+            && (sw - ww).abs() <= 3.0
             && (pw - ww).abs() <= 3.0;
         fits &= ok;
-        sizes.push(format!("window {ww}x{wh}: bar {bw}x{bh}, page {pw}x{ph}"));
+        sizes.push(format!(
+            "window {ww}x{wh}: bar {bw}x{bh}, strip {sw}x{sh}, page {pw}x{ph}"
+        ));
     }
     out.push(check(
-        "the bar keeps its height and the page fills the rest",
+        "the bar and the strip keep their height and the page fills the rest",
         fits,
         sizes.join("; "),
     ));
 
     // New stranger from the bar: a separate window with a store of its own.
     let before: Vec<String> = strangers.open_labels();
-    bar_call(app, w, "new_stranger", "{}");
+    bar_call(app, &win, "new_stranger", "{}");
     let appeared = wait_until(Instant::now() + Duration::from_secs(10), || {
         strangers.open_labels().len() > before.len()
     });
@@ -786,6 +819,286 @@ fn bar_checks(
                 "not judged here (each webview gets its own in-memory store on this system)"
                     .to_string()
             }
+        ),
+    ));
+    out
+}
+
+/// The gid cookie values in a Cookie header.
+fn gids(cookie: &str) -> Vec<String> {
+    cookie
+        .split(';')
+        .filter_map(|kv| kv.trim().strip_prefix("gid=").map(str::to_string))
+        .collect()
+}
+
+/// Checks a window of strangers side by side: separate stores, one
+/// address for all, a language each, the cookie counter, and changing or
+/// closing one of them.
+fn grid_checks(
+    app: &AppHandle,
+    strangers: &Strangers,
+    site: &Server,
+    site_url: &str,
+) -> Vec<Check> {
+    use crate::window::{page_label, strip_label, LANGUAGE_PER_STRANGER};
+    let mut out = Vec::new();
+    let langs = ["de-DE", "fr-FR", ""];
+    let tiles: Vec<(Option<Url>, String)> = langs
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                Url::parse(&format!("{site_url}/gridset?who=G{}", i + 1)).ok(),
+                l.to_string(),
+            )
+        })
+        .collect();
+    let Ok((win, labels)) = strangers.open_window(app, tiles) else {
+        out.push(check(
+            "strangers side by side keep their stores apart",
+            false,
+            "the window didn't open".into(),
+        ));
+        return out;
+    };
+    let who_hit = |path: &str, who: &str| {
+        site.hits().into_iter().find(|h| {
+            h.path == path && parse_query(&h.query).get("who").map(String::as_str) == Some(who)
+        })
+    };
+    let loaded = wait_until(Instant::now() + Duration::from_secs(20), || {
+        (1..=3).all(|i| who_hit("/lang", &format!("G{i}")).is_some())
+    });
+    // Let the counter read the stores.
+    std::thread::sleep(Duration::from_secs(3));
+    let issued: Vec<String> = (1..=3)
+        .map(|i| {
+            who_hit("/gridset", &format!("G{i}"))
+                .map(|h| h.issued)
+                .unwrap_or_default()
+        })
+        .collect();
+
+    // The counter, against what the server and the page set: four cookies
+    // from this site each.
+    let counted: Vec<String> = labels
+        .iter()
+        .map(|l| {
+            let c = strangers.count(l).unwrap_or_default();
+            let shown = eval_string(
+                app,
+                &strip_label(l),
+                "document.getElementById('cookies').textContent",
+            );
+            format!(
+                "{} counted ({} hidden from scripts), {} from other sites, strip shows {shown:?}",
+                c.this_site, c.this_site_http_only, c.other_sites
+            )
+        })
+        .collect();
+    let counts_right = labels.iter().all(|l| {
+        let c = strangers.count(l).unwrap_or_default();
+        c.this_site == 4
+            && c.this_site_http_only == 1
+            && eval_string(
+                app,
+                &strip_label(l),
+                "document.getElementById('cookies').textContent",
+            )
+            .starts_with("4 cookies from 127.0.0.1")
+    });
+    out.push(check(
+        "the cookie counter counts what each stranger was given",
+        loaded && counts_right,
+        format!(
+            "each stranger was given 4 cookies by the site (2 by the server, 1 of them HttpOnly, 2 by the page); {}",
+            counted.join("; ")
+        ),
+    ));
+
+    // One address for all three, then each must send back its own ID
+    // cookie and nobody else's.
+    let before = site.hits().len();
+    bar_call(
+        app,
+        &win,
+        "go",
+        &format!("{{ text: '{site_url}/gridcheck' }}"),
+    );
+    let arrived = wait_until(Instant::now() + Duration::from_secs(15), || {
+        site.hits()[before..]
+            .iter()
+            .filter(|h| h.path == "/gridcheck")
+            .count()
+            >= 3
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    let checks_seen: Vec<Vec<String>> = site.hits()[before..]
+        .iter()
+        .filter(|h| h.path == "/gridcheck")
+        .map(|h| gids(&h.cookie))
+        .collect();
+    let all_there = labels
+        .iter()
+        .all(|l| page_address(app, l).ends_with("/gridcheck"));
+    let mut sent: Vec<String> = checks_seen.iter().flatten().cloned().collect();
+    sent.sort();
+    let mut want = issued.clone();
+    want.sort();
+    let own_only = checks_seen.len() == 3
+        && checks_seen.iter().all(|g| g.len() == 1)
+        && sent == want
+        && !want.iter().any(String::is_empty);
+    out.push(check(
+        "the shared address goes to every stranger side by side",
+        arrived && all_there,
+        format!(
+            "one address typed in the bar; requests for it: {}; all three show it: {all_there}",
+            checks_seen.len()
+        ),
+    ));
+    out.push(check(
+        "strangers side by side keep their stores apart",
+        own_only,
+        format!(
+            "ID cookies handed out: {issued:?}; sent back on the shared address, per request: {checks_seen:?} (each must send exactly its own)"
+        ),
+    ));
+
+    // Languages: the header each stranger's first request carried, and what
+    // its page saw.
+    let lang_of = |i: usize| {
+        let who = format!("G{}", i + 1);
+        let header = who_hit("/gridset", &who)
+            .map(|h| h.lang)
+            .unwrap_or_default();
+        let seen = who_hit("/lang", &who)
+            .and_then(|h| parse_query(&h.query).get("nl").cloned())
+            .unwrap_or_default()
+            .replace("%2D", "-");
+        (header, seen)
+    };
+    let found: Vec<(String, String)> = (0..3).map(lang_of).collect();
+    let starts = |s: &str, tag: &str| {
+        s.to_ascii_lowercase()
+            .starts_with(&tag[..2].to_ascii_lowercase())
+    };
+    let own_langs = starts(&found[0].0, "de")
+        && starts(&found[0].1, "de")
+        && starts(&found[1].0, "fr")
+        && starts(&found[1].1, "fr")
+        && !starts(&found[2].0, "de")
+        && !starts(&found[2].0, "fr");
+    out.push(check(
+        if LANGUAGE_PER_STRANGER {
+            "each stranger has its own language"
+        } else {
+            "no language per stranger is offered where the engine can't keep it to one stranger"
+        },
+        if LANGUAGE_PER_STRANGER {
+            own_langs
+        } else {
+            // What was asked for must not have reached any stranger.
+            found
+                .iter()
+                .all(|(h, _)| !starts(h, "de") && !starts(h, "fr"))
+                || found.iter().all(|(h, _)| h == &found[0].0)
+        },
+        if LANGUAGE_PER_STRANGER {
+            format!(
+                "asked for German, French and the system's; Accept-Language and navigator.language: {}",
+                found
+                    .iter()
+                    .map(|(h, n)| format!("{h:?} / {n:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else {
+            format!(
+                "not offered on this system ({}); headers seen: {}",
+                crate::window::NO_LANGUAGE_REASON,
+                found
+                    .iter()
+                    .map(|(h, n)| format!("{h:?} / {n:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        },
+    ));
+
+    // Changing the third stranger's language: a new stranger in its place,
+    // at the same address, with nothing of the old one.
+    let third = labels[2].clone();
+    if LANGUAGE_PER_STRANGER {
+        let before = site.hits().len();
+        let _ = eval_string(
+            app,
+            &strip_label(&third),
+            "window.__TAURI_INTERNALS__.invoke('set_language', { lang: 'de-DE' }); 'sent'",
+        );
+        let replaced = wait_until(Instant::now() + Duration::from_secs(40), || {
+            let t = strangers.tiles(&win);
+            t.len() == 3
+                && !t.contains(&third)
+                && strangers.wipes().iter().any(|w| w.label == third)
+        });
+        let now = strangers.tiles(&win);
+        let new = now.get(2).cloned().unwrap_or_default();
+        let new_hit = site.hits()[before..]
+            .iter()
+            .find(|h| h.path == "/gridcheck")
+            .cloned();
+        let fresh = new_hit.as_ref().is_some_and(|h| gids(&h.cookie).is_empty());
+        let german = new_hit.as_ref().is_some_and(|h| starts(&h.lang, "de"));
+        let old_gone = strangers.wipes().iter().any(|w| w.label == third && w.gone);
+        out.push(check(
+            "changing a stranger's language opens a new stranger in its place",
+            replaced && new != third && fresh && german && old_gone && strangers.lang(&new) == "de-DE",
+            format!(
+                "still three strangers with the new one third: {replaced}; it reopened the same address: {}; it sent no earlier cookie: {fresh}; its language header: {:?}; the old one's data deleted: {old_gone}",
+                new_hit.is_some(),
+                new_hit.as_ref().map(|h| h.lang.clone()).unwrap_or_default()
+            ),
+        ));
+    } else {
+        let note = eval_string(
+            app,
+            &strip_label(&third),
+            "document.getElementById('lang').disabled ? 'disabled' : 'enabled'",
+        );
+        out.push(check(
+            "the language menu is off where the engine can't keep it to one stranger",
+            note == "disabled",
+            format!("not offered on this system; the language menu is {note}"),
+        ));
+    }
+
+    // Closing one stranger of three leaves the others as they were.
+    let second = labels[1].clone();
+    let first_count = strangers.count(&labels[0]).unwrap_or_default().this_site;
+    let _ = eval_string(
+        app,
+        &strip_label(&second),
+        "window.__TAURI_INTERNALS__.invoke('close_stranger'); 'sent'",
+    );
+    let closed = wait_until(Instant::now() + Duration::from_secs(40), || {
+        strangers.wipes().iter().any(|w| w.label == second)
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    let left = strangers.tiles(&win);
+    let second_gone = strangers
+        .wipes()
+        .iter()
+        .any(|w| w.label == second && w.gone)
+        && app.get_webview(&page_label(&second)).is_none();
+    let first_same = strangers.count(&labels[0]).unwrap_or_default().this_site == first_count;
+    out.push(check(
+        "closing one stranger of several deletes it and leaves the others",
+        closed && second_gone && left.len() == 2 && first_same,
+        format!(
+            "strangers left in the window: {}; the closed one's page gone and its data deleted: {second_gone}; the first still holds its {first_count} cookies: {first_same}",
+            left.len()
         ),
     ));
     out
@@ -1371,6 +1684,7 @@ fn run(
 
     // The bar and the window, on stranger C.
     checks.extend(bar_checks(app, strangers, site, site_url, &lc));
+    checks.extend(grid_checks(app, strangers, site, site_url));
     let hsts_c = hsts.map(|h| hsts_probe(app, h, &lc, "C"));
     checks.push(match (servers.hsts, &hsts_a) {
         (Some(Ok(_)), Some((learned, learned_at, (a, a_at)))) => {
@@ -1410,11 +1724,12 @@ fn run(
     });
 
     // 6. Everything closes; nothing may be left.
-    let opened = strangers.open_labels();
-    for l in &opened {
-        close(app, strangers, l);
+    for win in strangers.open_windows() {
+        close(app, strangers, &win);
     }
-    let all = wait_until(Instant::now() + Duration::from_secs(60), || {
+    let mut opened = strangers.opened();
+    opened.extend(strangers.windows_opened());
+    let all = wait_until(Instant::now() + Duration::from_secs(90), || {
         let w = strangers.wipes();
         opened.iter().all(|l| w.iter().any(|x| &x.label == l))
     });

@@ -17,7 +17,7 @@
     input { flex: 1; height: 30px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--line);
             border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; min-width: 0; }
     #note { color: #b91c1c; font-size: 12px; white-space: nowrap; }
-    #new { width: auto; padding: 0 10px; font-size: 13px; border-color: var(--line); }
+    button.text { width: auto; padding: 0 10px; font-size: 13px; border-color: var(--line); white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -28,7 +28,8 @@
     <input id="address" type="text" spellcheck="false" placeholder="Type a web address" aria-label="Web address">
   </form>
   <span id="note" role="status"></span>
-  <button id="new" title="Open another stranger, with nothing in common with this one">New stranger</button>
+  <button id="side" class="text" title="Add a stranger to this window, beside the others, with a store of its own">Side by side</button>
+  <button id="new" class="text" title="Open another window with a new stranger in it">New stranger</button>
   <script src="bar.js"></script>
 </body>
 </html>

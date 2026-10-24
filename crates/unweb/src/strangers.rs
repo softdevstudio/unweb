@@ -1,4 +1,6 @@
-//! Strangers: browser windows that each get a throwaway store of their own.
+//! Strangers: each one a throwaway store of its own, shown as a tile in a
+//! window (see window.rs). A window holds one to four strangers under one
+//! bar, and has a small store of its own for the bar.
 //!
 //! On Windows and Linux every stranger gets its own data folder under
 //! `<app data>/strangers/run-<random>/`, which the engine uses for cookies, storage,
@@ -19,7 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, Url, WebviewUrl};
+use tauri::{AppHandle, Manager, Url};
 
 /// Window labels of strangers start with this.
 pub const PREFIX: &str = "stranger-";
@@ -60,9 +62,18 @@ pub struct Strangers {
     /// Held while this copy of Unweb runs.
     lock: Mutex<Option<std::fs::File>>,
     next: AtomicU64,
+    /// Every stranger and window still open, with its folder.
     live: Mutex<HashMap<String, Option<PathBuf>>>,
     /// Every stranger's label, in the order they were opened.
     opened: Mutex<Vec<String>>,
+    /// Every window's label, in the order they were opened.
+    windows_opened: Mutex<Vec<String>>,
+    /// Each open window's strangers, in their order on screen.
+    windows: Mutex<HashMap<String, Vec<String>>>,
+    /// Each open stranger's language tag ("" for the system's).
+    langs: Mutex<HashMap<String, String>>,
+    /// The latest cookie count of each open stranger.
+    counts: Mutex<HashMap<String, unweb_core::CookieCount>>,
     wipes: Mutex<Vec<Wipe>>,
     /// Wipes still running.
     pending: AtomicUsize,
@@ -83,6 +94,10 @@ impl Strangers {
             next: AtomicU64::new(1),
             live: Mutex::new(HashMap::new()),
             opened: Mutex::new(Vec::new()),
+            windows_opened: Mutex::new(Vec::new()),
+            windows: Mutex::new(HashMap::new()),
+            langs: Mutex::new(HashMap::new()),
+            counts: Mutex::new(HashMap::new()),
             wipes: Mutex::new(Vec::new()),
             pending: AtomicUsize::new(0),
         }
@@ -122,43 +137,210 @@ impl Strangers {
         &self.root
     }
 
-    /// Opens a new stranger at `url` (the start page when None). Returns
-    /// its window label. The window holds two webviews: the bar (address,
-    /// back, forward, reload, new stranger) and the page. Both use the
-    /// stranger's own store; only the bar is granted app commands.
+    /// Opens a new window with one stranger at `url` (the start page when
+    /// None). Returns the stranger's label.
     pub fn open(&self, app: &AppHandle, url: Option<Url>) -> tauri::Result<String> {
+        let (_, tiles) = self.open_window(app, vec![(url, String::new())])?;
+        Ok(tiles.into_iter().next().unwrap_or_default())
+    }
+
+    /// Opens a new window with one stranger per entry of `tiles` (an address
+    /// or the start page, and a language tag). Returns the window's label and
+    /// the strangers' labels.
+    pub fn open_window(
+        &self,
+        app: &AppHandle,
+        tiles: Vec<(Option<Url>, String)>,
+    ) -> tauri::Result<(String, Vec<String>)> {
         let n = self.next.fetch_add(1, Ordering::SeqCst);
-        // Pages can read their window's label (Tauri puts it in the page),
-        // so it is random: a site can't tell the third stranger of a run
-        // from the fourth. The number is only in the window title.
-        let label = format!("{PREFIX}{}", random_hex());
-        let folder = if USES_FOLDERS {
-            Some(self.root.join(&label))
+        // Pages can read labels (Tauri puts them in the page), so they are
+        // random: a site can't tell the third stranger of a run from the
+        // fourth. The number is only in the window title.
+        let win = format!("{}{}", crate::window::WINDOW_PREFIX, random_hex());
+        let folder = USES_FOLDERS.then(|| self.root.join(&win));
+        // Remember the folder before the engine can write to it, so a failed
+        // build is still cleaned up.
+        if let Ok(mut live) = self.live.lock() {
+            live.insert(win.clone(), folder.clone());
+        }
+        if let Ok(mut o) = self.windows_opened.lock() {
+            o.push(win.clone());
+        }
+        if let Ok(mut w) = self.windows.lock() {
+            w.insert(win.clone(), Vec::new());
+        }
+        let count = tiles.len().clamp(1, crate::window::MAX_TILES);
+        let (title, size) = if count == 1 {
+            (format!("Unweb: stranger {n}"), (1100.0, 760.0))
         } else {
-            None
+            (
+                format!("Unweb: {count} strangers side by side"),
+                (1400.0, 860.0),
+            )
         };
-        let target = match url {
-            Some(u) => WebviewUrl::External(u),
-            None => WebviewUrl::App("index.html".into()),
+        if let Err(e) = crate::window::build_window(app, &win, &title, size, folder.as_deref()) {
+            if let Some(w) = app.get_window(&win) {
+                let _ = w.destroy();
+            }
+            self.window_closed(&win);
+            return Err(e);
+        }
+        let mut made = Vec::new();
+        for (url, lang) in tiles.into_iter().take(count) {
+            match self.add_tile(app, &win, url, &lang, None) {
+                Ok(t) => made.push(t),
+                Err(e) => {
+                    self.retire_window(app, &win);
+                    return Err(e);
+                }
+            }
+        }
+        Ok((win, made))
+    }
+
+    /// Adds a stranger to window `win` at `url` (the start page when None),
+    /// with language `lang`, at position `at` (the end when None). Returns
+    /// its label.
+    pub fn add_tile(
+        &self,
+        app: &AppHandle,
+        win: &str,
+        url: Option<Url>,
+        lang: &str,
+        at: Option<usize>,
+    ) -> tauri::Result<String> {
+        let lang = match crate::window::known_language(lang) {
+            Some(l) if crate::window::LANGUAGE_PER_STRANGER => l.to_string(),
+            _ => String::new(),
         };
-        // Remember the folder before the engine can write to it, so a
-        // failed build is still cleaned up.
+        let window = app.get_window(win).ok_or(tauri::Error::WindowNotFound)?;
+        if self.tiles(win).len() >= crate::window::MAX_TILES {
+            return Err(tauri::Error::Io(std::io::Error::other(
+                "this window has four strangers already",
+            )));
+        }
+        let label = format!("{PREFIX}{}", random_hex());
+        let folder = USES_FOLDERS.then(|| self.root.join(&label));
         if let Ok(mut live) = self.live.lock() {
             live.insert(label.clone(), folder.clone());
         }
         if let Ok(mut o) = self.opened.lock() {
             o.push(label.clone());
         }
-        match crate::window::build(app, &label, n, folder.as_deref(), target) {
-            Ok(()) => Ok(label),
-            Err(e) => {
-                if let Some(w) = app.get_window(&label) {
-                    let _ = w.destroy();
+        if let Ok(mut l) = self.langs.lock() {
+            l.insert(label.clone(), lang.clone());
+        }
+        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &lang) {
+            for v in [
+                crate::window::strip_label(&label),
+                crate::window::page_label(&label),
+            ] {
+                if let Some(v) = app.get_webview(&v) {
+                    let _ = v.close();
                 }
-                self.closed(&label);
-                Err(e)
+            }
+            self.closed(&label);
+            return Err(e);
+        }
+        if let Ok(mut w) = self.windows.lock() {
+            if let Some(tiles) = w.get_mut(win) {
+                let at = at.unwrap_or(tiles.len()).min(tiles.len());
+                tiles.insert(at, label.clone());
             }
         }
+        crate::window::layout(app, win);
+        if let Some(page) = app.get_webview(&crate::window::page_label(&label)) {
+            let target = url.unwrap_or_else(|| crate::window::app_url("index.html"));
+            crate::window::start_page(&page, target);
+        }
+        crate::window::show_address(app, win);
+        Ok(label)
+    }
+
+    /// The strangers of window `win`, in their order on screen.
+    pub fn tiles(&self, win: &str) -> Vec<String> {
+        self.windows
+            .lock()
+            .ok()
+            .and_then(|w| w.get(win).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The window stranger `label` is in.
+    pub fn window_of(&self, label: &str) -> Option<String> {
+        self.windows.lock().ok().and_then(|w| {
+            w.iter()
+                .find(|(_, tiles)| tiles.iter().any(|t| t == label))
+                .map(|(win, _)| win.clone())
+        })
+    }
+
+    /// Labels of the windows still open.
+    pub fn open_windows(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .windows
+            .lock()
+            .map(|w| w.keys().cloned().collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// Every window's label, in the order they were opened.
+    pub fn windows_opened(&self) -> Vec<String> {
+        self.windows_opened
+            .lock()
+            .map(|o| o.clone())
+            .unwrap_or_default()
+    }
+
+    /// A stranger's language tag ("" for the system's).
+    pub fn lang(&self, label: &str) -> String {
+        self.langs
+            .lock()
+            .ok()
+            .and_then(|l| l.get(label).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Records a stranger's latest cookie count.
+    pub fn set_count(&self, label: &str, count: unweb_core::CookieCount) {
+        if let Ok(mut c) = self.counts.lock() {
+            c.insert(label.to_string(), count);
+        }
+    }
+
+    /// A stranger's latest cookie count.
+    pub fn count(&self, label: &str) -> Option<unweb_core::CookieCount> {
+        self.counts.lock().ok().and_then(|c| c.get(label).cloned())
+    }
+
+    /// Gives stranger `label` another language. A stranger's language is
+    /// set before its first request, so this opens a new stranger in its
+    /// place, at the same address, and closes the old one with everything
+    /// it collected. Returns the new stranger's label.
+    pub fn change_language(
+        &self,
+        app: &AppHandle,
+        label: &str,
+        lang: &str,
+    ) -> tauri::Result<String> {
+        let win = self.window_of(label).ok_or(tauri::Error::WebviewNotFound)?;
+        let at = self.tiles(&win).iter().position(|t| t == label);
+        let url = app
+            .get_webview(&crate::window::page_label(label))
+            .and_then(|p| p.url().ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"));
+        // Room for the new stranger first: take the old one out of the
+        // window's list (it stays on screen until it is closed below).
+        if let Ok(mut w) = self.windows.lock() {
+            if let Some(tiles) = w.get_mut(&win) {
+                tiles.retain(|t| t != label);
+            }
+        }
+        let made = self.add_tile(app, &win, url, lang, at);
+        self.retire_tile(app, label);
+        made
     }
 
     /// Every stranger's label, in the order they were opened.
@@ -171,7 +353,12 @@ impl Strangers {
         let mut v: Vec<String> = self
             .live
             .lock()
-            .map(|l| l.keys().cloned().collect())
+            .map(|l| {
+                l.keys()
+                    .filter(|k| k.starts_with(PREFIX))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         v.sort();
         v
@@ -186,28 +373,104 @@ impl Strangers {
             .flatten()
     }
 
-    /// Closes a stranger. On Linux the engine is first told to clear the
-    /// stranger's data, so its network process has nothing left to write
-    /// into the folder later. Blocks, so call it off the main thread; the
-    /// folder itself is deleted when the window is gone (see `closed`).
+    /// Closes a window (`label` is a window), or a stranger (`label` is a
+    /// stranger; its whole window when it is the window's only one). Blocks,
+    /// so call it off the main thread.
     pub fn retire(&self, app: &AppHandle, label: &str) {
-        #[cfg(target_os = "linux")]
-        if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
-            clear_engine_data(&page);
+        if label.starts_with(crate::window::WINDOW_PREFIX) {
+            return self.retire_window(app, label);
         }
-        // WKWebView keeps a stranger's service worker running for a few
-        // seconds after its window is gone. Clearing the store removes the
-        // worker; leaving the page first stops what it is doing.
+        match self.window_of(label) {
+            Some(win) if self.tiles(&win).len() <= 1 => self.retire_window(app, &win),
+            Some(_) => self.retire_tile(app, label),
+            None => {}
+        }
+    }
+
+    /// Clears what the engine holds for a stranger before its webviews go.
+    /// On Linux the network process would otherwise write into the folder
+    /// later; on macOS WKWebView keeps a closed stranger's service worker
+    /// running for a few seconds unless its store is cleared (leaving the
+    /// page first stops what it is doing).
+    fn clear_stranger(&self, app: &AppHandle, label: &str) {
+        let Some(page) = app.get_webview(&crate::window::page_label(label)) else {
+            return;
+        };
+        #[cfg(target_os = "linux")]
+        clear_engine_data(&page);
         #[cfg(target_os = "macos")]
-        if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
+        {
             if let Ok(blank) = Url::parse("about:blank") {
                 let _ = page.navigate(blank);
             }
             clear_store(&page);
         }
-        if let Some(w) = app.get_window(label) {
+        #[cfg(target_os = "windows")]
+        let _ = page;
+    }
+
+    /// Closes one stranger of a window that keeps others, and deletes its
+    /// data. Blocks until the data is gone.
+    pub fn retire_tile(&self, app: &AppHandle, label: &str) {
+        self.clear_stranger(app, label);
+        let win = self.window_of(label);
+        if let (Some(win), Ok(mut w)) = (&win, self.windows.lock()) {
+            if let Some(tiles) = w.get_mut(win) {
+                tiles.retain(|t| t != label);
+            }
+        }
+        for v in [
+            crate::window::strip_label(label),
+            crate::window::page_label(label),
+        ] {
+            if let Some(v) = app.get_webview(&v) {
+                let _ = v.close();
+            }
+        }
+        if let Some(win) = &win {
+            crate::window::layout(app, win);
+            crate::window::show_address(app, win);
+        }
+        if let Ok(mut c) = self.counts.lock() {
+            c.remove(label);
+        }
+        self.closed(label);
+    }
+
+    /// Closes a whole window. Its strangers' data and its own folder are
+    /// deleted once the window is gone (see `window_closed`).
+    pub fn retire_window(&self, app: &AppHandle, win: &str) {
+        for t in self.tiles(win) {
+            self.clear_stranger(app, &t);
+        }
+        if let Some(w) = app.get_window(win) {
+            #[cfg(target_os = "linux")]
+            crate::linux_layout::forget_window(&w);
             let _ = w.destroy();
         }
+    }
+
+    /// A window is gone: delete every stranger's data and the window's own
+    /// folder, each checked. Blocks until done, so call it off the main
+    /// thread.
+    pub fn window_closed(&self, win: &str) {
+        let tiles = self
+            .windows
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(win))
+            .unwrap_or_default();
+        if let Ok(mut c) = self.counts.lock() {
+            for t in &tiles {
+                c.remove(t);
+            }
+        }
+        std::thread::scope(|s| {
+            for t in &tiles {
+                s.spawn(move || self.closed(t));
+            }
+            s.spawn(move || self.closed(win));
+        });
     }
 
     /// A stranger's window has closed: delete its data and check it's gone.
