@@ -133,6 +133,64 @@ pub const NO_WEBRTC: &str = r#"(function () {
   }
 })();"#;
 
+/// macOS: gives a stranger's page its proxy with fallback to a direct
+/// connection turned off. Apple's proxy configuration lets a connection go
+/// direct when the proxy can't be reached unless told otherwise, and wry
+/// doesn't tell it (the self-test caught a stranger reaching the site
+/// directly with its proxy down). This replaces wry's configuration on the
+/// page's own data store before its first request. An error means the
+/// stranger must not be used.
+#[cfg(target_os = "macos")]
+pub fn macos_no_failover(page: &tauri::Webview, location: &Url) -> Result<(), String> {
+    use objc2_foundation::NSObjectNSKeyValueCoding;
+    use std::ffi::{c_char, CString};
+    type Obj = *mut objc2_foundation::NSObject;
+    #[link(name = "Network", kind = "framework")]
+    unsafe extern "C" {
+        fn nw_endpoint_create_host(host: *const c_char, port: *const c_char) -> Obj;
+        fn nw_proxy_config_create_socksv5(endpoint: Obj) -> Obj;
+        fn nw_proxy_config_create_http_connect(endpoint: Obj, tls: Obj) -> Obj;
+        fn nw_proxy_config_set_failover_allowed(config: Obj, allowed: bool);
+    }
+    let fail = || "Couldn't give this stranger its proxy".to_string();
+    let host = CString::new(location.host_str().unwrap_or_default()).map_err(|_| fail())?;
+    let port = CString::new(location.port().unwrap_or_default().to_string()).map_err(|_| fail())?;
+    let socks = location.scheme() == "socks5";
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    page.with_webview(move |pv| unsafe {
+        let done = (|| {
+            let wv = (pv.inner() as *const objc2_web_kit::WKWebView).as_ref()?;
+            let endpoint = nw_endpoint_create_host(host.as_ptr(), port.as_ptr());
+            if endpoint.is_null() {
+                return None;
+            }
+            let config = if socks {
+                nw_proxy_config_create_socksv5(endpoint)
+            } else {
+                nw_proxy_config_create_http_connect(endpoint, std::ptr::null_mut())
+            };
+            if config.is_null() {
+                return None;
+            }
+            nw_proxy_config_set_failover_allowed(config, false);
+            let proxies: objc2::rc::Retained<
+                objc2_foundation::NSArray<objc2_foundation::NSObject>,
+            > = objc2_foundation::NSArray::arrayWithObject(&*config);
+            wv.configuration().websiteDataStore().setValue_forKey(
+                Some(&proxies),
+                objc2_foundation::ns_string!("proxyConfigurations"),
+            );
+            Some(())
+        })();
+        let _ = tx.send(done.is_some());
+    })
+    .map_err(|_| fail())?;
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(true) => Ok(()),
+        _ => Err(fail()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,63 +250,5 @@ mod tests {
         assert!(s.contains("disable_non_proxied_udp"));
         assert!(s.contains("\"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE p.example\""));
         assert_eq!(webview2_switches(None), "");
-    }
-}
-
-/// macOS: gives a stranger's page its proxy with fallback to a direct
-/// connection turned off. Apple's proxy configuration lets a connection go
-/// direct when the proxy can't be reached unless told otherwise, and wry
-/// doesn't tell it (the self-test caught a stranger reaching the site
-/// directly with its proxy down). This replaces wry's configuration on the
-/// page's own data store before its first request. An error means the
-/// stranger must not be used.
-#[cfg(target_os = "macos")]
-pub fn macos_no_failover(page: &tauri::Webview, location: &Url) -> Result<(), String> {
-    use objc2_foundation::NSObjectNSKeyValueCoding;
-    use std::ffi::{c_char, CString};
-    type Obj = *mut objc2_foundation::NSObject;
-    #[link(name = "Network", kind = "framework")]
-    unsafe extern "C" {
-        fn nw_endpoint_create_host(host: *const c_char, port: *const c_char) -> Obj;
-        fn nw_proxy_config_create_socksv5(endpoint: Obj) -> Obj;
-        fn nw_proxy_config_create_http_connect(endpoint: Obj, tls: Obj) -> Obj;
-        fn nw_proxy_config_set_failover_allowed(config: Obj, allowed: bool);
-    }
-    let fail = || "Couldn't give this stranger its proxy".to_string();
-    let host = CString::new(location.host_str().unwrap_or_default()).map_err(|_| fail())?;
-    let port = CString::new(location.port().unwrap_or_default().to_string()).map_err(|_| fail())?;
-    let socks = location.scheme() == "socks5";
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    page.with_webview(move |pv| unsafe {
-        let done = (|| {
-            let wv = (pv.inner() as *const objc2_web_kit::WKWebView).as_ref()?;
-            let endpoint = nw_endpoint_create_host(host.as_ptr(), port.as_ptr());
-            if endpoint.is_null() {
-                return None;
-            }
-            let config = if socks {
-                nw_proxy_config_create_socksv5(endpoint)
-            } else {
-                nw_proxy_config_create_http_connect(endpoint, std::ptr::null_mut())
-            };
-            if config.is_null() {
-                return None;
-            }
-            nw_proxy_config_set_failover_allowed(config, false);
-            let proxies: objc2::rc::Retained<
-                objc2_foundation::NSArray<objc2_foundation::NSObject>,
-            > = objc2_foundation::NSArray::arrayWithObject(&*config);
-            wv.configuration().websiteDataStore().setValue_forKey(
-                Some(&proxies),
-                objc2_foundation::ns_string!("proxyConfigurations"),
-            );
-            Some(())
-        })();
-        let _ = tx.send(done.is_some());
-    })
-    .map_err(|_| fail())?;
-    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(true) => Ok(()),
-        _ => Err(fail()),
     }
 }
