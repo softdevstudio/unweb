@@ -145,15 +145,18 @@ pub fn open(app: &AppHandle, strangers: &Strangers, win: &str) -> Result<String,
 /// query and fragment a site can fill with identifiers.
 fn shown_address(page: &tauri::Webview) -> String {
     match crate::window::page_url(page) {
-        Some(u) if u.scheme() == "http" || u.scheme() == "https" => format!(
-            "{}://{}{}",
-            u.scheme(),
-            u.host_str().unwrap_or_default(),
-            u.path()
-        )
-        .chars()
-        .take(200)
-        .collect(),
+        Some(u) if u.scheme() == "http" || u.scheme() == "https" => {
+            let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+            format!(
+                "{}://{}{port}{}",
+                u.scheme(),
+                u.host_str().unwrap_or_default(),
+                u.path()
+            )
+            .chars()
+            .take(200)
+            .collect()
+        }
         _ => "Start page".into(),
     }
 }

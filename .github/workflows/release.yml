@@ -189,8 +189,22 @@ jobs:
         run: |
           f="$RUNNER_TEMP/selftest.log"
           [ -f "$f" ] || exit 0
-          body=$( { grep -E '^(PASS|FAIL|SKIP|engine:|selftest)' "$f" || true; echo "-- last lines:"; tail -n 25 "$f"; } | tail -n 70 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' || true)
-          echo "::notice title=self-test (${{ matrix.name }})::$body"
+          # GitHub cuts long annotations short, so the lines go out a few at
+          # a time: what failed or didn't run first, then the summary, then
+          # the end of the log.
+          post() { # level, title, lines
+            local part=0 lines="$3" chunk
+            while [ -n "$lines" ] && [ "$part" -lt 8 ]; do
+              part=$((part + 1))
+              chunk=$(printf '%s\n' "$lines" | head -n 4 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+              lines=$(printf '%s\n' "$lines" | tail -n +5)
+              echo "::$1 title=$2 (${{ matrix.name }}) $part::$chunk"
+            done
+          }
+          bad=$(grep -E '^(FAIL|SKIP)' "$f" | cut -c1-900 || true)
+          [ -n "$bad" ] && post error "self-test failed checks" "$bad"
+          post notice "self-test" "$(grep -E '^(engine:|selftest)' "$f" | cut -c1-400 || true)"
+          post notice "self-test last lines" "$(tail -n 12 "$f" | cut -c1-400)"
       - name: Collect installers
         run: |
           set -euo pipefail
