@@ -20,6 +20,9 @@ use crate::window::{grid, BAR_HEIGHT, STRIP_HEIGHT};
 thread_local! {
     /// Each stranger's window and its (strip, page) widgets.
     static TILES: RefCell<HashMap<String, (String, gtk::Widget, gtk::Widget)>> = RefCell::new(HashMap::new());
+    /// Each stranger's cell in its window's grid (a box with its strip
+    /// above its page).
+    static CELLS: RefCell<HashMap<String, gtk::Box>> = RefCell::new(HashMap::new());
     /// Each window's grid.
     static GRIDS: RefCell<HashMap<String, gtk::Grid>> = RefCell::new(HashMap::new());
 }
@@ -91,38 +94,51 @@ fn pack(window: &tauri::Window, tiles: &[String]) -> Result<(), String> {
         }
     });
 
-    // Empty the grid and place every stranger again, in order.
-    for child in grid_widget.children() {
-        if let Ok(b) = child.clone().downcast::<gtk::Box>() {
-            for w in b.children() {
-                b.remove(&w);
-            }
-        }
-        grid_widget.remove(&child);
-    }
+    // Place every stranger in order. A stranger already in the grid is only
+    // moved to its new cell: taking a page out of the grid and putting it
+    // back unrealizes its widget, and after a stranger is replaced (a new
+    // location) WebKitGTK stopped painting the pages that had been moved
+    // that way. Only new strangers are packed, and only closed ones removed.
     let (cols, _) = grid(tiles.len());
     TILES.with(|t| {
         let mut t = t.borrow_mut();
-        for (i, tile) in tiles.iter().enumerate() {
-            let Some((_, strip, page)) = t.get(tile).cloned() else {
-                continue;
-            };
-            detach(&strip);
-            detach(&page);
-            let cell = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            strip.set_size_request(-1, STRIP_HEIGHT as i32);
-            cell.pack_start(&strip, false, false, 0);
-            cell.pack_start(&page, true, true, 0);
-            grid_widget.attach(&cell, (i % cols) as i32, (i / cols) as i32, 1, 1);
-        }
-        // Strangers of this window that closed: forget their widgets.
-        t.retain(|k, (w, strip, page)| {
-            let keep = *w != label || tiles.contains(k);
-            if !keep {
-                detach(strip);
-                detach(page);
+        CELLS.with(|cells| {
+            let mut cells = cells.borrow_mut();
+            for (i, tile) in tiles.iter().enumerate() {
+                let Some((_, strip, page)) = t.get(tile).cloned() else {
+                    continue;
+                };
+                let (x, y) = ((i % cols) as i32, (i / cols) as i32);
+                match cells.get(tile) {
+                    Some(cell) if cell.parent().as_ref() == Some(grid_widget.upcast_ref()) => {
+                        grid_widget.set_cell_left_attach(cell, x);
+                        grid_widget.set_cell_top_attach(cell, y);
+                    }
+                    _ => {
+                        detach(&strip);
+                        detach(&page);
+                        let cell = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                        strip.set_size_request(-1, STRIP_HEIGHT as i32);
+                        cell.pack_start(&strip, false, false, 0);
+                        cell.pack_start(&page, true, true, 0);
+                        grid_widget.attach(&cell, x, y, 1, 1);
+                        cells.insert(tile.clone(), cell);
+                    }
+                }
             }
-            keep
+            // Strangers of this window that closed: take their cells out
+            // and forget their widgets.
+            t.retain(|k, (w, strip, page)| {
+                let keep = *w != label || tiles.contains(k);
+                if !keep {
+                    if let Some(cell) = cells.remove(k) {
+                        grid_widget.remove(&cell);
+                    }
+                    detach(strip);
+                    detach(page);
+                }
+                keep
+            });
         });
     });
     vbox.show_all();
@@ -136,6 +152,20 @@ pub fn forget_window(window: &tauri::Window) {
         GRIDS.with(|g| {
             g.borrow_mut().remove(&label);
         });
-        TILES.with(|t| t.borrow_mut().retain(|_, (w, _, _)| *w != label));
+        TILES.with(|t| {
+            let mut t = t.borrow_mut();
+            let gone: Vec<String> = t
+                .iter()
+                .filter(|(_, (w, _, _))| *w == label)
+                .map(|(k, _)| k.clone())
+                .collect();
+            CELLS.with(|c| {
+                let mut c = c.borrow_mut();
+                for k in &gone {
+                    c.remove(k);
+                }
+            });
+            t.retain(|_, (w, _, _)| *w != label);
+        });
     });
 }
