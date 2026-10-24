@@ -2,3 +2,10 @@ Unweb
 Copyright 2026 Unweb contributors
 
 Licensed under the Apache License, Version 2.0.
+
+crates/unweb-core started as a copy of part of Watchkeeper
+(https://github.com/softdevstudio/watchkeeper), also licensed under the
+Apache License, Version 2.0:
+
+  Watchkeeper
+  Copyright 2026 Watchkeeper contributors
