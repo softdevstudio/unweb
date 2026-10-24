@@ -1,20 +1,23 @@
-date: 2026-10-24T05:08:04Z
-commit: 3dbf195
+date: 2026-10-24T05:32:01Z
+commit: 44b26d4
 os: linux (Linux 6.18.44-fc-v153 x86_64)
 rustc 1.97.0 (2d8144b78 2026-07-07)
 cargo 1.97.0 (c980f4866 2026-06-30)
 
 == cargo fmt --all -- --check
 == cargo clippy --locked --all-targets -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s
+   Compiling unweb v0.2.0 (/home/claude/unweb/crates/unweb)
+    Checking unweb-core v0.2.0 (/home/claude/unweb/crates/unweb-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.26s
 == cargo test --locked
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
-     Running unittests src/main.rs (target/debug/deps/unweb-888e25104b35f34c)
+   Compiling unweb v0.2.0 (/home/claude/unweb/crates/unweb)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.45s
+     Running unittests src/main.rs (target/debug/deps/unweb-2e36d33ca6a19bb4)
 
 running 12 tests
 test strangers::tests::a_closed_stranger_without_folder_is_gone ... ok
-test strangers::tests::a_running_copy_keeps_its_folder ... ok
 test strangers::tests::a_run_left_by_a_crash_goes_at_next_start ... ok
+test strangers::tests::a_running_copy_keeps_its_folder ... ok
 test strangers::tests::another_live_copy_is_recognised ... ok
 test strangers::tests::leftovers_are_deleted_at_start ... ok
 test tests::addresses ... ok
@@ -25,14 +28,14 @@ test window::tests::the_bar_and_strips_open_only_themselves ... ok
 test window::tests::what_the_page_may_open ... ok
 test strangers::tests::wiping_deletes_and_checks ... ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.03s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.04s
 
-     Running unittests src/lib.rs (target/debug/deps/unweb_core-f38249179fee8081)
+     Running unittests src/lib.rs (target/debug/deps/unweb_core-3f48ffe9a7b5c88d)
 
 running 4 tests
 test tests::a_site_that_only_looks_alike_is_another_site ... ok
-test tests::counting ... ok
 test tests::empty_and_hostless ... ok
+test tests::counting ... ok
 test tests::sites ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -44,33 +47,32 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 == cargo build --locked -p unweb
-   Compiling unweb v0.1.0 (/home/claude/unweb/crates/unweb)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.99s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s
 == selftest
 PASS stranger A leaves every kind of trace: A's page reported {"cacheapi": "1", "cachedjs": "1", "cookie": "1", "frame": "0", "idb": "1", "ls": "1", "step": "set", "sw": "1", "webgl": "1", "who": "A"}; the other site's frame loaded: true
 PASS stranger A finds its own traces (control): A found [cookie ls idb cacheapi sw]; A sent its server cookie: true; the cached file came from A's cache: true; A sent back its ETag ID: true; frame: cookie 0 storage 1; 26 files in A's own folder; requests: /check+cookie /etag.js+cookie+revalidate /report+cookie
-PASS a stranger open at the same time finds nothing: page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; ETags sent back: []; requests meanwhile: /check /etag.js /cached.js /report
-PASS a closed stranger's data is deleted: deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-b3347ea3c99245bd/stranger-0e8e9b9d3e263594) after 14.8s
+PASS a stranger open at the same time finds nothing: page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; ETags sent back: []; requests meanwhile: /check /cached.js /etag.js /report
+PASS a closed stranger's data is deleted: deleted once the engine stopped writing, and still gone 10s later (/root/.local/share/org.unweb.app/strangers/run-3337a421ba9e6f2c/stranger-8f74fdb75680936c) after 14.8s
 PASS a closed stranger's service worker stops: A's service worker called home 3 times in the 1.5 s before A closed (it was running: true); 6 times while A was closing; 0 times in the 2 s after the window went; 0 times from then until 15 s after
 PASS a new stranger after one closed finds nothing: page found [] (none expected): cacheapi=0 cookie=0 frame_cookie=0 frame_ls=0 idb=0 ls=0 sw=0 (frame_cookie not judged: A's own control couldn't see it on this engine); its requests carried an earlier cookie: false; the cached file was fetched afresh: true; ETags sent back: []; requests meanwhile: /check /cached.js /etag.js /report
-PASS the bar shows the page's address: page at http://127.0.0.1:43525/check?who=C; bar shows "http://127.0.0.1:43525/check?who=C"
+PASS the bar shows the page's address: page at http://127.0.0.1:42353/check?who=C; bar shows "http://127.0.0.1:42353/check?who=C"
 PASS the bar's address, back, forward and reload work, and a page can't trap them: typed address opened: true; back reached /nav1: true (bar followed: true); forward reached /trap: true; reload fetched it again: true; the page's own history functions called: []
 PASS nothing can load another page in the bar or a strip: after the bar was sent to another address it shows tauri://localhost/bar.html, then tauri://localhost/bar.html; the strip shows tauri://localhost/strip.html; requests the engine sent for that address before refusing it: 0
-PASS a page can't call the app, and its popups stay in the same stranger: the page's calls: ["name=new_stranger&r=refused", "name=go&r=refused", "name=reload&r=refused", "name=back&r=refused", "name=forward&r=refused", "name=side_by_side&r=refused", "name=set_language&r=refused", "name=close_stranger&r=refused"]; window.open opened in this stranger's page: true; windows before 2, after 2; the window and page names the page can read are random: true (win-a89493cc847c7d96 page-3e00e5c890fd33cb)
+PASS a page can't call the app, and its popups stay in the same stranger: the page's calls: ["name=new_stranger&r=refused", "name=go&r=refused", "name=reload&r=refused", "name=back&r=refused", "name=forward&r=refused", "name=side_by_side&r=refused", "name=set_language&r=refused", "name=close_stranger&r=refused"]; window.open opened in this stranger's page: true; windows before 2, after 2; the window and page names the page can read are random: true (win-fbb054ab3a666053 page-ad38ec0939708bbe)
 PASS the bar and the strip keep their height and the page fills the rest: window 1100x760: bar 1100x44, strip 1100x28, page 1100x688; window 900x600: bar 900x44, strip 900x28, page 900x528
-PASS New stranger opens another stranger with a store of its own: opened: stranger-dd76c9ce7c6fc218; its own store: true; it shows the start page: true
+PASS New stranger opens another stranger with a store of its own: opened: stranger-48fa0a59a5de12ea; its own store: true; it shows the start page: true
 PASS the cookie counter counts what each stranger was given: the site gave the first stranger 5 cookies and the others 4 (2 by the server, 1 of them HttpOnly, the rest by the page); 5 counted (1 hidden from scripts), 0 from other sites, strip shows "5 cookies from 127.0.0.1"; 4 counted (1 hidden from scripts), 0 from other sites, strip shows "4 cookies from 127.0.0.1"; 4 counted (1 hidden from scripts), 0 from other sites, strip shows "4 cookies from 127.0.0.1"
 PASS the shared address goes to every stranger side by side: one address typed in the bar; requests for it: 3; all three show it: true
-PASS strangers side by side keep their stores apart: ID cookies handed out: ["e3006ed48a7d", "ec34df58bf6f", "9a2e2b6d9624"]; sent back on the shared address, per request: [["9a2e2b6d9624"], ["ec34df58bf6f"], ["e3006ed48a7d"]] (each must send exactly its own)
+PASS strangers side by side keep their stores apart: ID cookies handed out: ["dd1c78672684", "30ed708883af", "d0381142e6f1"]; sent back on the shared address, per request: [["dd1c78672684"], ["30ed708883af"], ["d0381142e6f1"]] (each must send exactly its own)
 PASS no language per stranger is offered where the engine can't keep it to one stranger: not offered on this system (On Linux every stranger uses the system language: WebKitGTK takes one language for all of them.); headers seen: "en-us" / "en-US", "en-us" / "en-US", "en-us" / "en-US"
 PASS the language menu is off where the engine can't keep it to one stranger: not offered on this system; the language menu is disabled
 PASS closing one stranger of several deletes it and leaves the others: strangers left in the window: 2; the closed one's page gone and its data deleted: true; the first still holds its 5 cookies: true
-PASS a new stranger side by side opens the typed address, not one a site made: the first stranger was on http://127.0.0.1:43525/gridcheck?uid=secret123; a new stranger added: true (after 0.1 s); it opened http://127.0.0.1:43525/gridcheck: true (after 0.4 s); an identifier from the site's address reached it: false
+PASS a new stranger side by side opens the typed address, not one a site made: the first stranger was on http://127.0.0.1:42353/gridcheck?uid=secret123; a new stranger added: true (after 0.1 s); it opened http://127.0.0.1:42353/gridcheck: true (after 0.4 s); an identifier from the site's address reached it: false
 PASS a page that closes itself closes its stranger, or nothing happens: the stranger closed and its data was deleted; strangers left: 2
 SKIP HSTS learned by one stranger doesn't reach another: not run: no trusted test certificate (scripts/test-ca.sh, then UNWEB_TEST_TLS); required in CI
-PASS nothing is left on disk: 13 strangers wiped (win-732b75c2ada1ec12 gone, stranger-0e8e9b9d3e263594 gone, stranger-ae5890496568675f gone, stranger-520435b4b79f2f40 gone, win-562a19145c21a513 gone, win-a89493cc847c7d96 gone, win-d02c25faf0dc8846 gone, win-d4f4556a235f3a78 gone, stranger-f97662330adfe84f gone, stranger-c16d6ff8877fc16f gone, stranger-3e00e5c890fd33cb gone, stranger-dd76c9ce7c6fc218 gone, stranger-9deed02948107223 gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none
+PASS nothing is left on disk: 13 strangers wiped (win-f544fe63431891d5 gone, stranger-8f74fdb75680936c gone, stranger-28d18164b6529c4c gone, stranger-2ba7bc0bd9fea909 gone, win-20753b32cbc5e699 gone, win-4312d3500acfe8b5 gone, win-95ae85be5ab91d36 gone, win-fbb054ab3a666053 gone, stranger-48fa0a59a5de12ea gone, stranger-f3b3835668c3449c gone, stranger-83fd3dd7b261a94c gone, stranger-90138a79594573c4 gone, stranger-ad38ec0939708bbe gone); files left in the strangers folder: []; files anywhere else in Unweb's folders: none
 PASS the shared GPU shader cache gains nothing: A compiled a new WebGL shader: true; files added or changed in the user's Mesa and NVIDIA shader caches: none
 PASS the normal browser's data is left alone: files added or changed: none; folders that exist and were watched: /root/.config/chromium, /root/.config/google-chrome
-selftest passed with 1 check(s) not run in 99.4s on linux (Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15)
+selftest passed with 1 check(s) not run in 98.6s on linux (Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15)
 PASS nothing is left after Unweb exits: none of 4 folders exists
 selftest exit code: 0
