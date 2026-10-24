@@ -52,5 +52,5 @@ objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2
 objc2-app-kit = { version = "0.3", features = ["std", "NSImage", "NSBitmapImageRep", "NSImageRep", "NSGraphics"] }
 # Clearing a closing stranger's store and waiting until WebKit is done.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString", "NSProcessInfo", "NSData", "NSDictionary", "NSError"] }
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString", "NSProcessInfo", "NSData", "NSDictionary", "NSError", "NSURL"] }
 block2 = "0.6"

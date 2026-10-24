@@ -503,6 +503,35 @@ pub fn layout(app: &AppHandle, window: &str) {
     }
 }
 
+/// The address a page shows, if it has one. On macOS wry's own call
+/// panics when WKWebView has no address yet (a page that hasn't loaded, or
+/// couldn't, such as one whose proxy is down), so the address is read
+/// directly there. Call it off the main thread.
+pub fn page_url(page: &tauri::Webview) -> Option<Url> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+        page.with_webview(move |pv| unsafe {
+            let ptr = pv.inner() as *const objc2_web_kit::WKWebView;
+            let s = ptr
+                .as_ref()
+                .and_then(|wv| wv.URL())
+                .and_then(|u| u.absoluteString())
+                .map(|s| s.to_string());
+            let _ = tx.send(s);
+        })
+        .ok()?;
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .and_then(|s| Url::parse(&s).ok())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        page.url().ok()
+    }
+}
+
 /// Tells the bar what the window's first stranger is showing and whether
 /// any of its strangers can go back or forward. Runs off the calling
 /// thread, since asking the engine about its history needs the main
@@ -525,7 +554,7 @@ pub fn show_address(app: &AppHandle, window: &str) {
         let Some(first) = pages.first() else {
             return;
         };
-        let url = first.url().map(|u| u.to_string()).unwrap_or_default();
+        let url = page_url(first).map(|u| u.to_string()).unwrap_or_default();
         // The start page is Unweb's own; the bar shows it empty.
         let shown = match Url::parse(&url) {
             Ok(u) if is_app_origin(&u) || u.scheme() == "about" => String::new(),

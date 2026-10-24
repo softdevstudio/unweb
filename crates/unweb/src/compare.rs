@@ -131,8 +131,8 @@ pub fn open(app: &AppHandle, strangers: &Strangers, win: &str) -> Result<String,
 /// A page's address for a caption: scheme, host and path, without the
 /// query and fragment a site can fill with identifiers.
 fn shown_address(page: &tauri::Webview) -> String {
-    match page.url() {
-        Ok(u) if u.scheme() == "http" || u.scheme() == "https" => format!(
+    match crate::window::page_url(page) {
+        Some(u) if u.scheme() == "http" || u.scheme() == "https" => format!(
             "{}://{}{}",
             u.scheme(),
             u.host_str().unwrap_or_default(),

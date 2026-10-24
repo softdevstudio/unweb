@@ -50,7 +50,9 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
     ) else {
         return;
     };
-    let url = page.url().map(|u| u.to_string()).unwrap_or_default();
+    let url = crate::window::page_url(&page)
+        .map(|u| u.to_string())
+        .unwrap_or_default();
     let web = url.starts_with("http://") || url.starts_with("https://");
     let cookies: Vec<StoredCookie> = page
         .cookies()
