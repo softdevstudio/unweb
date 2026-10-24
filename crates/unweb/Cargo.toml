@@ -47,10 +47,10 @@ windows-core = "0.62"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKNavigation", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration"] }
+objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKNavigation", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "WKHTTPCookieStore"] }
 # A stranger's screenshot, made a PNG.
 objc2-app-kit = { version = "0.3", features = ["std", "NSImage", "NSBitmapImageRep", "NSImageRep", "NSGraphics"] }
 # Clearing a closing stranger's store and waiting until WebKit is done.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString", "NSProcessInfo", "NSData", "NSDictionary", "NSError", "NSURL"] }
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString", "NSProcessInfo", "NSData", "NSDictionary", "NSError", "NSURL", "NSArray", "NSHTTPCookie"] }
 block2 = "0.6"

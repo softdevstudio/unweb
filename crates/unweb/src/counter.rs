@@ -54,16 +54,7 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
         .map(|u| u.to_string())
         .unwrap_or_default();
     let web = url.starts_with("http://") || url.starts_with("https://");
-    let cookies: Vec<StoredCookie> = page
-        .cookies()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| StoredCookie {
-            name: c.name().to_string(),
-            domain: c.domain().unwrap_or_default().to_string(),
-            http_only: c.http_only().unwrap_or(false),
-        })
-        .collect();
+    let cookies = read_cookies(&page);
     let count = count_cookies(if web { &url } else { "" }, &cookies);
     let text = if web {
         describe(&count)
@@ -93,4 +84,58 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
         "locationNote": crate::location::supported().err().unwrap_or(""),
     });
     let _ = strip.eval(format!("window.unwebStrip && window.unwebStrip({state})"));
+}
+
+/// The cookies in a page's store: names, domains and whether scripts can
+/// see them, never values.
+#[cfg(not(target_os = "macos"))]
+fn read_cookies(page: &tauri::Webview) -> Vec<StoredCookie> {
+    page.cookies()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| StoredCookie {
+            name: c.name().to_string(),
+            domain: c.domain().unwrap_or_default().to_string(),
+            http_only: c.http_only().unwrap_or(false),
+        })
+        .collect()
+}
+
+/// On macOS wry's cookies() waits by running the main thread's event loop
+/// from inside the main thread, which can stall or break whatever else is
+/// queued there (the self-test saw windows fail to open). So the store is
+/// asked directly, and this thread waits for the answer instead.
+#[cfg(target_os = "macos")]
+fn read_cookies(page: &tauri::Webview) -> Vec<StoredCookie> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<StoredCookie>>();
+    let asked = page.with_webview(move |pv| unsafe {
+        let ptr = pv.inner() as *const objc2_web_kit::WKWebView;
+        let Some(wv) = ptr.as_ref() else {
+            let _ = tx.send(Vec::new());
+            return;
+        };
+        let store = wv.configuration().websiteDataStore().httpCookieStore();
+        let done = block2::RcBlock::new(
+            move |cookies: std::ptr::NonNull<
+                objc2_foundation::NSArray<objc2_foundation::NSHTTPCookie>,
+            >| {
+                let list = cookies
+                    .as_ref()
+                    .to_vec()
+                    .into_iter()
+                    .map(|c| StoredCookie {
+                        name: c.name().to_string(),
+                        domain: c.domain().to_string(),
+                        http_only: c.isHTTPOnly(),
+                    })
+                    .collect();
+                let _ = tx.send(list);
+            },
+        );
+        store.getAllCookies(&done);
+    });
+    if asked.is_err() {
+        return Vec::new();
+    }
+    rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default()
 }
