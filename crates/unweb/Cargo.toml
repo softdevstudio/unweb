@@ -17,10 +17,16 @@ tauri-build = { version = "2.7", features = [] }
 [dependencies]
 unweb-core = { path = "../unweb-core" }
 # "unstable" enables two webviews in one window (the bar and the page).
-tauri = { version = "2.12", features = ["unstable"] }
+# "macos-proxy": a stranger's location (proxy) on macOS.
+tauri = { version = "2.12", features = ["unstable", "macos-proxy"] }
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.3"
+# The compare strip: screenshots travel to its page as base64, and the
+# self-test reads the saved image back.
+base64 = "0.21"
+png = "0.18"
 # The self-test's local HTTPS server (HSTS checks). ring rather than the
 # default aws-lc-rs, which needs extra build tools on Windows.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -30,15 +36,21 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # before its folder is deleted and to keep passwords out of the keyring.
 gtk = "0.18"
 webkit2gtk = { version = "2", features = ["v2_16", "v2_30"] }
+# Writing a stranger's screenshot as a PNG (same cairo as WebKitGTK's).
+cairo-rs = { version = "0.18", features = ["png"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Native back and forward (see nav.rs).
 webview2-com = "0.39"
 windows-core = "0.62"
+# A stranger's screenshot arrives in a memory stream.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKNavigation", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+objc2-web-kit = { version = "0.3.2", features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKNavigation", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration"] }
+# A stranger's screenshot, made a PNG.
+objc2-app-kit = { version = "0.3", features = ["std", "NSImage", "NSBitmapImageRep", "NSImageRep", "NSGraphics"] }
 # Clearing a closing stranger's store and waiting until WebKit is done.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSSet", "NSString", "NSProcessInfo", "NSData", "NSDictionary", "NSError"] }
 block2 = "0.6"

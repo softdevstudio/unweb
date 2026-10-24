@@ -17,6 +17,9 @@
     input { flex: 1; height: 30px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--line);
             border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; min-width: 0; }
     #note { color: #b91c1c; font-size: 12px; white-space: nowrap; }
+    select { height: 30px; max-width: 160px; font: 13px system-ui, sans-serif; color: var(--fg); background: var(--field);
+             border: 1px solid var(--line); border-radius: 6px; }
+    #note.ok { color: var(--muted); }
     button.text { width: auto; padding: 0 10px; font-size: 13px; border-color: var(--line); white-space: nowrap; }
   </style>
 </head>
@@ -28,6 +31,10 @@
     <input id="address" type="text" spellcheck="false" placeholder="Type a web address" aria-label="Web address">
   </form>
   <span id="note" role="status"></span>
+  <select id="setups" aria-label="Setups" title="Saved setups: a window's strangers by language and location, nothing they saw">
+    <option value="">Setups</option>
+  </select>
+  <button id="compare" class="text" title="Screenshots of every stranger in this window, side by side">Compare</button>
   <button id="side" class="text" title="Add a stranger to this window, beside the others, with a store of its own">Side by side</button>
   <button id="new" class="text" title="Open another window with a new stranger in it">New stranger</button>
   <script src="bar.js"></script>

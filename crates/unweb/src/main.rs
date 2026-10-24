@@ -7,20 +7,25 @@
 //! closes that store is deleted. A window shows one to four strangers side
 //! by side under one bar. See strangers.rs and window.rs.
 
+mod capture;
+mod compare;
 mod counter;
 mod hsts;
 #[cfg(target_os = "linux")]
 mod linux_layout;
+mod location;
 mod nav;
 mod selftest;
+mod setups;
 mod strangers;
+mod testproxy;
 mod window;
 
 use std::sync::Arc;
 
 use tauri::{Manager, RunEvent, Url, WindowEvent};
 
-use strangers::Strangers;
+use strangers::{Settings, Strangers};
 use window::WINDOW_PREFIX;
 
 /// Turns what someone typed into an address: `example.com` becomes
@@ -139,13 +144,13 @@ async fn side_by_side(webview: tauri::Webview) -> Result<(), String> {
     let app = webview.app_handle().clone();
     let url = strangers.typed(&win);
     strangers
-        .add_tile(&app, &win, url, "", None)
+        .add_tile(&app, &win, url, &Settings::default(), None)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
 /// A strip's language menu: gives its stranger another language, which
-/// means a new stranger in its place (see Strangers::change_language).
+/// means a new stranger in its place (see Strangers::change_settings).
 #[tauri::command]
 async fn set_language(webview: tauri::Webview, lang: String) -> Result<(), String> {
     let stranger = stranger_for(&webview)?;
@@ -154,10 +159,122 @@ async fn set_language(webview: tauri::Webview, lang: String) -> Result<(), Strin
     }
     let lang = window::known_language(&lang).ok_or("not a language Unweb offers")?;
     let app = webview.app_handle().clone();
-    strangers_of(&webview)?
-        .change_language(&app, &stranger, lang)
+    let strangers = strangers_of(&webview)?;
+    let settings = Settings {
+        lang: lang.to_string(),
+        ..strangers.settings(&stranger)
+    };
+    strangers
+        .change_settings(&app, &stranger, &settings)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// A strip's location field: gives its stranger a proxy (or none), which
+/// means a new stranger in its place.
+#[tauri::command]
+async fn set_location(webview: tauri::Webview, text: String) -> Result<(), String> {
+    let stranger = stranger_for(&webview)?;
+    let location = location::parse_location(&text)?;
+    if location.is_some() {
+        location::supported()?;
+    }
+    let app = webview.app_handle().clone();
+    let strangers = strangers_of(&webview)?;
+    let settings = Settings {
+        location,
+        ..strangers.settings(&stranger)
+    };
+    if settings == strangers.settings(&stranger) {
+        return Ok(());
+    }
+    strangers
+        .change_settings(&app, &stranger, &settings)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn setups_of(webview: &tauri::Webview) -> Result<Arc<setups::Setups>, String> {
+    Ok(webview
+        .app_handle()
+        .try_state::<Arc<setups::Setups>>()
+        .ok_or("not ready")?
+        .inner()
+        .clone())
+}
+
+/// Tells every window's bar the setups there are now.
+fn show_setups_everywhere(app: &tauri::AppHandle) {
+    if let Some(s) = app.try_state::<Arc<Strangers>>() {
+        for w in s.open_windows() {
+            window::show_address(app, &w);
+        }
+    }
+}
+
+/// Saves this window's strangers (their languages and locations, nothing
+/// they saw) as a setup called `name`.
+#[tauri::command]
+async fn save_setup(webview: tauri::Webview, name: String) -> Result<(), String> {
+    let win = window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
+    let strangers = strangers_of(&webview)?;
+    let settings: Vec<Settings> = strangers
+        .tiles(&win)
+        .iter()
+        .map(|t| strangers.settings(t))
+        .collect();
+    setups_of(&webview)?.save(&name, &settings)?;
+    show_setups_everywhere(webview.app_handle());
+    Ok(())
+}
+
+/// Opens a new window with the strangers of setup `name`, each with a new
+/// store of its own, at the start page.
+#[tauri::command]
+async fn open_setup(webview: tauri::Webview, name: String) -> Result<(), String> {
+    window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
+    let settings = setups_of(&webview)?
+        .get(&name)
+        .ok_or("There is no setup by that name")?;
+    let app = webview.app_handle().clone();
+    strangers_of(&webview)?
+        .open_window(&app, settings.into_iter().map(|s| (None, s)).collect())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_setup(webview: tauri::Webview, name: String) -> Result<(), String> {
+    window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
+    setups_of(&webview)?.delete(&name)?;
+    show_setups_everywhere(webview.app_handle());
+    Ok(())
+}
+
+/// Compare: screenshots of every stranger in this window, side by side, in
+/// a window of their own.
+#[tauri::command]
+async fn compare(webview: tauri::Webview) -> Result<(), String> {
+    let win = window::window_of_bar(webview.label()).ok_or("not a window's bar")?;
+    let strangers = strangers_of(&webview)?;
+    let app = webview.app_handle().clone();
+    compare::open(&app, &strangers, &win).map(|_| ())
+}
+
+/// The compare window's Save image: writes the strip it drew as a PNG in
+/// the Downloads folder and says where.
+#[tauri::command]
+async fn save_compare(webview: tauri::Webview, image: String) -> Result<String, String> {
+    if !webview.label().starts_with(compare::VIEW_PREFIX) {
+        return Err("not a compare window".into());
+    }
+    let c = webview
+        .app_handle()
+        .try_state::<Arc<compare::Compare>>()
+        .ok_or("not ready")?
+        .inner()
+        .clone();
+    compare::save(&c, &image).map(|p| p.display().to_string())
 }
 
 /// A strip's close button: closes its stranger (its whole window when it is
@@ -211,12 +328,34 @@ fn main() {
             new_stranger,
             side_by_side,
             set_language,
-            close_stranger
+            set_location,
+            close_stranger,
+            save_setup,
+            open_setup,
+            delete_setup,
+            compare,
+            save_compare
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
             let root = handle.path().app_data_dir()?.join("strangers");
             let strangers = Arc::new(Strangers::new(root));
+            // The self-test keeps its setups in its own folder, never with
+            // the person's.
+            let setups_path = match &selftest_dir {
+                Some(dir) => dir.join("setups.json"),
+                None => handle.path().app_config_dir()?.join("setups.json"),
+            };
+            app.manage(Arc::new(setups::Setups::new(setups_path)));
+            // Saved strips go to Downloads (the self-test's to its folder).
+            let compare_dir = match &selftest_dir {
+                Some(dir) => dir.join("compare"),
+                None => handle
+                    .path()
+                    .download_dir()
+                    .or_else(|_| handle.path().home_dir())?,
+            };
+            app.manage(Arc::new(compare::Compare::new(compare_dir)));
             let _ = setup_holder.set(strangers.clone());
             app.manage(strangers.clone());
             let start = match &selftest_dir {
@@ -243,6 +382,18 @@ fn main() {
         } if label.starts_with(WINDOW_PREFIX) => {
             if let Some(s) = holder.get().cloned() {
                 std::thread::spawn(move || s.window_closed(&label));
+            }
+        }
+        // A compare window is gone: delete its small store.
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } if label.starts_with(compare::PREFIX) => {
+            if let Some(s) = holder.get().cloned() {
+                std::thread::spawn(move || {
+                    s.closed(&label);
+                });
             }
         }
         // Closing a window goes through `retire`, which clears the engine's

@@ -26,6 +26,26 @@ use tauri::{AppHandle, Manager, Url};
 /// Window labels of strangers start with this.
 pub const PREFIX: &str = "stranger-";
 
+/// What a stranger is opened with: its language and its location. Both are
+/// fixed for its life (the engine takes them before the first request), so
+/// changing either opens a new stranger in its place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// A language tag ("" for the system's).
+    pub lang: String,
+    /// A proxy (see location.rs), or None to go direct.
+    pub location: Option<Url>,
+}
+
+impl Settings {
+    pub fn lang(lang: &str) -> Settings {
+        Settings {
+            lang: lang.to_string(),
+            location: None,
+        }
+    }
+}
+
 /// Whether this platform gives each stranger a data folder of its own.
 pub const USES_FOLDERS: bool = cfg!(any(target_os = "windows", target_os = "linux"));
 
@@ -70,8 +90,8 @@ pub struct Strangers {
     windows_opened: Mutex<Vec<String>>,
     /// Each open window's strangers, in their order on screen.
     windows: Mutex<HashMap<String, Vec<String>>>,
-    /// Each open stranger's language tag ("" for the system's).
-    langs: Mutex<HashMap<String, String>>,
+    /// Each open stranger's language and location.
+    settings: Mutex<HashMap<String, Settings>>,
     /// The latest cookie count of each open stranger.
     counts: Mutex<HashMap<String, unweb_core::CookieCount>>,
     /// The address last typed in each window's bar (or given at start).
@@ -107,7 +127,7 @@ impl Strangers {
             opened: Mutex::new(Vec::new()),
             windows_opened: Mutex::new(Vec::new()),
             windows: Mutex::new(HashMap::new()),
-            langs: Mutex::new(HashMap::new()),
+            settings: Mutex::new(HashMap::new()),
             counts: Mutex::new(HashMap::new()),
             typed: Mutex::new(HashMap::new()),
             busy: Mutex::new(std::collections::HashSet::new()),
@@ -154,17 +174,17 @@ impl Strangers {
     /// Opens a new window with one stranger at `url` (the start page when
     /// None). Returns the stranger's label.
     pub fn open(&self, app: &AppHandle, url: Option<Url>) -> tauri::Result<String> {
-        let (_, tiles) = self.open_window(app, vec![(url, String::new())])?;
+        let (_, tiles) = self.open_window(app, vec![(url, Settings::default())])?;
         Ok(tiles.into_iter().next().unwrap_or_default())
     }
 
     /// Opens a new window with one stranger per entry of `tiles` (an address
-    /// or the start page, and a language tag). Returns the window's label and
+    /// or the start page, and its settings). Returns the window's label and
     /// the strangers' labels.
     pub fn open_window(
         &self,
         app: &AppHandle,
-        tiles: Vec<(Option<Url>, String)>,
+        tiles: Vec<(Option<Url>, Settings)>,
     ) -> tauri::Result<(String, Vec<String>)> {
         let n = self.next.fetch_add(1, Ordering::SeqCst);
         // Pages can read labels (Tauri puts them in the page), so they are
@@ -203,8 +223,8 @@ impl Strangers {
             self.set_typed(&win, u);
         }
         let mut made = Vec::new();
-        for (url, lang) in tiles.into_iter().take(count) {
-            match self.add_tile(app, &win, url, &lang, None) {
+        for (url, settings) in tiles.into_iter().take(count) {
+            match self.add_tile(app, &win, url, &settings, None) {
                 Ok(t) => made.push(t),
                 Err(e) => {
                     self.retire_window(app, &win);
@@ -216,20 +236,33 @@ impl Strangers {
     }
 
     /// Adds a stranger to window `win` at `url` (the start page when None),
-    /// with language `lang`, at position `at` (the end when None). Returns
-    /// its label.
+    /// with `settings`, at position `at` (the end when None). Returns its
+    /// label. A language this engine can't give one stranger is left out; a
+    /// location this system can't give is an error.
     pub fn add_tile(
         &self,
         app: &AppHandle,
         win: &str,
         url: Option<Url>,
-        lang: &str,
+        settings: &Settings,
         at: Option<usize>,
     ) -> tauri::Result<String> {
-        let lang = match crate::window::known_language(lang) {
+        let lang = match crate::window::known_language(&settings.lang) {
             Some(l) if crate::window::LANGUAGE_PER_STRANGER => l.to_string(),
             _ => String::new(),
         };
+        // Checked again here, whatever asked: only an address that passes
+        // the check reaches the engine.
+        let location = match &settings.location {
+            None => None,
+            Some(l) => {
+                crate::location::supported()
+                    .map_err(|e| tauri::Error::Io(std::io::Error::other(e)))?;
+                crate::location::parse_location(l.as_str())
+                    .map_err(|e| tauri::Error::Io(std::io::Error::other(e)))?
+            }
+        };
+        let settings = Settings { lang, location };
         let window = app.get_window(win).ok_or(tauri::Error::WindowNotFound)?;
         let _building = self.building.lock();
         if self.tiles(win).len() >= crate::window::MAX_TILES {
@@ -245,10 +278,11 @@ impl Strangers {
         if let Ok(mut o) = self.opened.lock() {
             o.push(label.clone());
         }
-        if let Ok(mut l) = self.langs.lock() {
-            l.insert(label.clone(), lang.clone());
+        if let Ok(mut l) = self.settings.lock() {
+            l.insert(label.clone(), settings.clone());
         }
-        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &lang) {
+        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &settings)
+        {
             for v in [
                 crate::window::strip_label(&label),
                 crate::window::page_label(&label),
@@ -332,13 +366,18 @@ impl Strangers {
             .unwrap_or_default()
     }
 
-    /// A stranger's language tag ("" for the system's).
-    pub fn lang(&self, label: &str) -> String {
-        self.langs
+    /// A stranger's language and location.
+    pub fn settings(&self, label: &str) -> Settings {
+        self.settings
             .lock()
             .ok()
             .and_then(|l| l.get(label).cloned())
             .unwrap_or_default()
+    }
+
+    /// A stranger's language tag ("" for the system's).
+    pub fn lang(&self, label: &str) -> String {
+        self.settings(label).lang
     }
 
     /// Records a stranger's latest cookie count.
@@ -353,15 +392,15 @@ impl Strangers {
         self.counts.lock().ok().and_then(|c| c.get(label).cloned())
     }
 
-    /// Gives stranger `label` another language. A stranger's language is
-    /// set before its first request, so this opens a new stranger in its
-    /// place, at the same address, and closes the old one with everything
-    /// it collected. Returns the new stranger's label.
-    pub fn change_language(
+    /// Gives stranger `label` another language or location. Both are set
+    /// before a stranger's first request, so this opens a new stranger in
+    /// its place, at the address typed in the bar, and closes the old one
+    /// with everything it collected. Returns the new stranger's label.
+    pub fn change_settings(
         &self,
         app: &AppHandle,
         label: &str,
-        lang: &str,
+        settings: &Settings,
     ) -> tauri::Result<String> {
         let win = self.window_of(label).ok_or(tauri::Error::WebviewNotFound)?;
         if !self.claim(label) {
@@ -380,7 +419,20 @@ impl Strangers {
                 tiles.retain(|t| t != label);
             }
         }
-        let made = self.add_tile(app, &win, url, lang, at);
+        let made = self.add_tile(app, &win, url, settings, at);
+        if made.is_err() {
+            // Nothing replaced it: the old stranger keeps its place.
+            if let Ok(mut w) = self.windows.lock() {
+                if let Some(tiles) = w.get_mut(&win) {
+                    let at = at.unwrap_or(tiles.len()).min(tiles.len());
+                    tiles.insert(at, label.to_string());
+                }
+            }
+            if let Ok(mut b) = self.busy.lock() {
+                b.remove(label);
+            }
+            return made;
+        }
         self.retire_tile(app, label);
         crate::window::layout(app, &win);
         made
@@ -405,6 +457,17 @@ impl Strangers {
             .unwrap_or_default();
         v.sort();
         v
+    }
+
+    /// A folder for another of Unweb's own windows (a compare window), under
+    /// this run's folder and wiped like a stranger's when `closed` is called
+    /// for `label`.
+    pub fn extra_folder(&self, label: &str) -> Option<PathBuf> {
+        let folder = USES_FOLDERS.then(|| self.root.join(label));
+        if let Ok(mut live) = self.live.lock() {
+            live.insert(label.to_string(), folder.clone());
+        }
+        folder
     }
 
     /// The data folder of an open stranger.
@@ -852,7 +915,7 @@ fn wipe_folder(label: &str, dir: &Path) -> Wipe {
     }
 }
 
-fn random_hex() -> String {
+pub(crate) fn random_hex() -> String {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).expect("no system randomness");
     b.iter().map(|x| format!("{x:02x}")).collect()

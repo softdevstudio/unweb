@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-compare"
+description = "Enables the compare command without any pre-configured scope."
+commands.allow = ["compare"]
+
+[[permission]]
+identifier = "deny-compare"
+description = "Denies the compare command without any pre-configured scope."
+commands.deny = ["compare"]

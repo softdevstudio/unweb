@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "compare",
+  "description": "The compare window's own page: its Save image button, and nothing else.",
+  "webviews": ["cmpview-*"],
+  "permissions": [
+    "allow-save-compare"
+  ]
+}

@@ -39,6 +39,19 @@ use tauri::{AppHandle, Manager, Url};
 use crate::strangers::{Strangers, USES_FOLDERS};
 
 const OVERALL: Duration = Duration::from_secs(240);
+/// If the self-test hasn't finished by then, it says where it was and
+/// stops (the scripts that run it give up at 300 s).
+const WATCHDOG: Duration = Duration::from_secs(280);
+
+/// The part of the self-test running now, for the watchdog.
+static STEP: Mutex<&'static str> = Mutex::new("starting");
+static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn step(name: &'static str) {
+    if let Ok(mut s) = STEP.lock() {
+        *s = name;
+    }
+}
 
 /// The folder given after `--selftest`, if any.
 pub fn requested_dir() -> Option<PathBuf> {
@@ -66,6 +79,9 @@ struct Hit {
     lang: String,
     /// The ID cookie this answer hands out (/gridset), if any.
     issued: String,
+    /// The port the request came from (a proxy's onward port, when it came
+    /// through one).
+    peer: u16,
 }
 
 #[derive(Clone)]
@@ -128,6 +144,7 @@ fn serve(
     other: &Mutex<String>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let peer = stream.peer_addr().map(|a| a.port()).unwrap_or_default();
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -186,6 +203,7 @@ fn serve(
             at: Some(Instant::now()),
             lang,
             issued: issued.clone(),
+            peer,
         });
     }
     let other = other.lock().map(|o| o.clone()).unwrap_or_default();
@@ -261,6 +279,28 @@ fn serve(
         ),
         // A page that takes over the page's own Back and Forward.
         (true, "/trap") => ("200 OK", "text/html", TRAP.to_string()),
+        // The location checks: a page with an image, a call and a frame,
+        // and a WebRTC probe run when asked.
+        (true, "/proxied") => ("200 OK", "text/html", PROXIED.replace("{who}", &who)),
+        (true, "/pframe") => (
+            "200 OK",
+            "text/html",
+            "<!doctype html><p>frame</p>".to_string(),
+        ),
+        // A page of one colour, for the compare strip.
+        (true, "/color") => {
+            let c = parse_query(&query).get("c").cloned().unwrap_or_default();
+            let c: String = c
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .take(6)
+                .collect();
+            (
+                "200 OK",
+                "text/html",
+                format!("<!doctype html><title>{c}</title><style>html,body{{margin:0;height:100%;background:#{c}}}</style>"),
+            )
+        }
         _ => ("204 No Content", "text/plain", String::new()),
     };
     let head = format!(
@@ -291,6 +331,33 @@ fn random_tag() -> String {
     let _ = getrandom::fill(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
+
+const PROXIED: &str = r#"<!doctype html><title>proxied</title><p>proxied {who}</p>
+<img src="/pimg?who={who}" alt="">
+<iframe src="/pframe?who={who}"></iframe>
+<script>
+fetch('/pfetch?who={who}').catch(function () { });
+window.unwebRtc = function (port) {
+  function probe(w) {
+    try {
+      var P = w.RTCPeerConnection || w.webkitRTCPeerConnection;
+      if (typeof P !== 'function') return 'none';
+      var pc = new P({ iceServers: [{ urls: 'stun:127.0.0.1:' + port }] });
+      pc.createDataChannel('x');
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () { });
+      setTimeout(function () { try { pc.close(); } catch (e) { } }, 8000);
+      return 'made';
+    } catch (e) { return 'error'; }
+  }
+  var main = probe(window);
+  // A frame made by the page, with no address of its own.
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  var frame = probe(f.contentWindow);
+  fetch('/prtc?who={who}&main=' + main + '&frame=' + frame).catch(function () { });
+  return main + ' ' + frame;
+};
+</script>"#;
 
 const GRIDSET: &str = r#"<!doctype html><title>gridset</title><p>gridset {who}</p><script>
 document.cookie = 'g3=1; max-age=3600; path=/';
@@ -471,6 +538,19 @@ pub fn start(
     let shaders_before = shader_cache_snapshot();
     let normal_before = normal_browser_snapshot();
     let hsts = std::env::var_os("UNWEB_TEST_TLS").map(|d| crate::hsts::Hsts::start(Path::new(&d)));
+    std::thread::spawn(|| {
+        std::thread::sleep(WATCHDOG);
+        if !FINISHED.load(std::sync::atomic::Ordering::SeqCst) {
+            let at = STEP.lock().map(|s| *s).unwrap_or("?");
+            println!(
+                "FAIL the self-test finishes in time: still running after {}s, during: {at}",
+                WATCHDOG.as_secs()
+            );
+            println!("selftest FAILED (stopped by its watchdog during: {at})");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            std::process::exit(3);
+        }
+    });
     std::thread::spawn(move || {
         let started = Instant::now();
         let outcome = run(
@@ -514,6 +594,7 @@ pub fn start(
             outcome.os,
             outcome.user_agent
         );
+        FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
         handle.exit(if passed { 0 } else { 1 });
     });
     Ok(first)
@@ -570,6 +651,9 @@ fn page_address(app: &AppHandle, window: &str) -> String {
         "String(location.href)",
     )
 }
+
+/// How many app commands there are; a page must be refused every one.
+const COMMANDS: usize = 14;
 
 /// Asks the bar of `window` to run one of its commands, the way its
 /// buttons do.
@@ -722,11 +806,11 @@ fn bar_checks(
         app,
         &page_label(w),
         "(function(){var i=window.__TAURI_INTERNALS__;var tell=function(n,r){fetch('/cmd?name='+n+'&r='+r)};\
-         ['new_stranger','go','reload','back','forward','side_by_side','set_language','close_stranger'].forEach(function(n){try{i.invoke(n,{text:'example.com',lang:'de-DE'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
+         ['new_stranger','go','reload','back','forward','side_by_side','set_language','set_location','close_stranger','save_setup','open_setup','delete_setup','compare','save_compare'].forEach(function(n){try{i.invoke(n,{text:'example.com',lang:'de-DE',name:'x',image:'x'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
          return 'sent'})()",
     );
     let answered = wait_until(Instant::now() + Duration::from_secs(10), || {
-        site.hits().iter().filter(|h| h.path == "/cmd").count() >= 8
+        site.hits().iter().filter(|h| h.path == "/cmd").count() >= COMMANDS
     });
     let cmds: Vec<String> = site
         .hits()
@@ -764,7 +848,7 @@ fn bar_checks(
     out.push(check(
         "a page can't call the app, and its popups stay in the same stranger",
         answered
-            && cmds.len() == 8
+            && cmds.len() == COMMANDS
             && cmds.iter().all(|q| q.contains("r=refused"))
             && popup_here
             && windows_after == windows_before
@@ -868,13 +952,13 @@ fn grid_checks(
     use crate::window::{page_label, strip_label, LANGUAGE_PER_STRANGER};
     let mut out = Vec::new();
     let langs = ["de-DE", "fr-FR", ""];
-    let tiles: Vec<(Option<Url>, String)> = langs
+    let tiles: Vec<(Option<Url>, crate::strangers::Settings)> = langs
         .iter()
         .enumerate()
         .map(|(i, l)| {
             (
                 Url::parse(&format!("{site_url}/gridset?who=G{}", i + 1)).ok(),
-                l.to_string(),
+                crate::strangers::Settings::lang(l),
             )
         })
         .collect();
@@ -1590,6 +1674,7 @@ fn run(
     let deadline = started + OVERALL;
     let mut checks = Vec::new();
 
+    step("1, stranger A leaves traces");
     // 1. A leaves traces.
     let set = wait_until(deadline, || site.report("set", "A").is_some());
     std::thread::sleep(Duration::from_millis(1500));
@@ -1619,6 +1704,7 @@ fn run(
         })
         .unwrap_or(0);
 
+    step("2, A finds its own traces");
     // 2. Control: A finds its own traces.
     navigate(app, la, &format!("{site_url}/check?who=A"));
     let a_checked = wait_until(Instant::now() + Duration::from_secs(20), || {
@@ -1702,6 +1788,7 @@ fn run(
         });
     }
 
+    step("3, stranger B looks");
     // 3. B, open at the same time.
     let b = strangers.open(app, Url::parse(&format!("{site_url}/check?who=B")).ok());
     let lb = b.as_ref().cloned().unwrap_or_default();
@@ -1721,6 +1808,7 @@ fn run(
     checks.push(c_b);
     let hsts_b = hsts.map(|h| hsts_probe(app, h, &lb, "B"));
 
+    step("4, A closes");
     // 4. A closes and its data goes. Its service worker must stop with it.
     let pings_open = sw_pings(site, "A");
     std::thread::sleep(Duration::from_millis(1500));
@@ -1777,6 +1865,7 @@ fn run(
         ),
     ));
 
+    step("5, stranger C looks");
     // 5. C, opened after A closed.
     let c = strangers.open(app, Url::parse(&format!("{site_url}/check?who=C")).ok());
     let lc = c.as_ref().cloned().unwrap_or_default();
@@ -1796,8 +1885,15 @@ fn run(
     checks.push(c_c);
 
     // The bar and the window, on stranger C.
+    step("the bar");
     checks.extend(bar_checks(app, strangers, site, site_url, &lc));
+    step("strangers side by side");
     checks.extend(grid_checks(app, strangers, site, site_url));
+    step("locations and setups");
+    checks.extend(location_checks(app, strangers, site, site_url));
+    step("compare");
+    checks.extend(compare_checks(app, strangers, site, site_url));
+    step("HSTS");
     let hsts_c = hsts.map(|h| hsts_probe(app, h, &lc, "C"));
     checks.push(match (servers.hsts, &hsts_a) {
         (Some(Ok(_)), Some((learned, learned_at, (a, a_at)))) => {
@@ -1836,6 +1932,7 @@ fn run(
         },
     });
 
+    step("6, everything closes");
     // 6. Everything closes; nothing may be left.
     for win in strangers.open_windows() {
         close(app, strangers, &win);
@@ -1907,6 +2004,7 @@ fn run(
         ),
     ));
 
+    step("7, the shader cache");
     // 7. The GPU shader cache shared by every program kept nothing.
     let shaders_after = shader_cache_snapshot();
     let changed: Vec<String> = shaders_after
@@ -1941,6 +2039,7 @@ fn run(
         },
     ));
 
+    step("8, the normal browser");
     // 8. The normal browser's data, and the engine's default store, were
     // left alone.
     let normal_after = normal_browser_snapshot();
@@ -1991,4 +2090,507 @@ fn run(
         wipes,
         seconds: started.elapsed().as_secs_f64(),
     }
+}
+
+/// Requests for stranger `who` on the location pages.
+fn proxied_hits(site: &Server, who: &str) -> Vec<Hit> {
+    site.hits()
+        .into_iter()
+        .filter(|h| {
+            matches!(
+                h.path.as_str(),
+                "/proxied" | "/pimg" | "/pfetch" | "/pframe" | "/prtc"
+            ) && parse_query(&h.query).get("who").map(String::as_str) == Some(who)
+        })
+        .collect()
+}
+
+/// Stranger `who`'s requests, and whether each came from one of `ports`.
+fn came_through(site: &Server, who: &str, ports: &[u16]) -> (usize, bool) {
+    let h = proxied_hits(site, who);
+    (
+        h.len(),
+        !h.is_empty() && h.iter().all(|x| ports.contains(&x.peer)),
+    )
+}
+
+/// Locations (proxies) and saved setups.
+fn location_checks(
+    app: &AppHandle,
+    strangers: &Strangers,
+    site: &Server,
+    site_url: &str,
+) -> Vec<Check> {
+    use crate::strangers::Settings;
+    use crate::testproxy::{closed_port, Proxy, Stun};
+    use crate::window::{page_label, strip_label, LANGUAGE_PER_STRANGER};
+    let mut out = Vec::new();
+    let through = "a stranger with a location reaches sites only through its proxy";
+    if let Err(e) = crate::location::supported() {
+        out.push(Check {
+            skipped: true,
+            ..check(
+                through,
+                std::env::var_os("CI").is_none(),
+                format!("not run: {e}"),
+            )
+        });
+        return out;
+    }
+    let (Ok(p1), Ok(p2), Ok(stun)) = (Proxy::http(), Proxy::socks5(), Stun::start()) else {
+        out.push(check(
+            through,
+            false,
+            "the test proxies didn't start".into(),
+        ));
+        return out;
+    };
+    // far.unweb.test resolves nowhere but inside the test proxies.
+    let far = format!("http://far.unweb.test:{}", site.port);
+    let loc = |s: &str| crate::location::parse_location(s).ok().flatten();
+    let l1 = Settings {
+        lang: if LANGUAGE_PER_STRANGER {
+            "de-DE".into()
+        } else {
+            String::new()
+        },
+        location: loc(&format!("http://127.0.0.1:{}", p1.port)),
+    };
+    let l2 = Settings {
+        lang: String::new(),
+        location: loc(&format!("socks5://127.0.0.1:{}", p2.port)),
+    };
+    let tiles = vec![
+        // Through an HTTP proxy, to a local address, which engines like to
+        // send direct.
+        (
+            Url::parse(&format!("{site_url}/proxied?who=L1")).ok(),
+            l1.clone(),
+        ),
+        // Through a SOCKS5 proxy, to a name only the proxy can look up.
+        (
+            Url::parse(&format!("{far}/proxied?who=L2")).ok(),
+            l2.clone(),
+        ),
+        // Direct, the control.
+        (
+            Url::parse(&format!("{site_url}/proxied?who=L3")).ok(),
+            Settings::default(),
+        ),
+    ];
+    let Ok((win, labels)) = strangers.open_window(app, tiles) else {
+        out.push(check(through, false, "the window didn't open".into()));
+        return out;
+    };
+    let complete = |who: &str| {
+        let h = proxied_hits(site, who);
+        ["/proxied", "/pimg", "/pfetch", "/pframe"]
+            .iter()
+            .all(|p| h.iter().any(|x| x.path == *p))
+    };
+    let loaded = wait_until(Instant::now() + Duration::from_secs(25), || {
+        ["L1", "L2", "L3"].iter().all(|w| complete(w))
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    let (p1_ports, p2_ports) = (p1.onward_ports(), p2.onward_ports());
+    let (n1, all1) = came_through(site, "L1", &p1_ports);
+    let (n2, all2) = came_through(site, "L2", &p2_ports);
+    let h3 = proxied_hits(site, "L3");
+    let direct3 = !h3.is_empty()
+        && h3
+            .iter()
+            .all(|x| !p1_ports.contains(&x.peer) && !p2_ports.contains(&x.peer));
+    let names_to_proxy = p2
+        .onward()
+        .iter()
+        .any(|o| o.how == "socks-name" && o.host == "far.unweb.test");
+    let shown = eval_string(
+        app,
+        &strip_label(&labels[0]),
+        "document.getElementById('where').textContent",
+    );
+    let strip_shows = shown.contains(&format!("127.0.0.1:{}", p1.port));
+    out.push(check(
+        through,
+        loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && direct3 && names_to_proxy && strip_shows,
+        format!(
+            "HTTP proxy, local address: {n1} requests, all through the proxy: {all1}; SOCKS5 proxy, a name only the proxy knows: {n2} requests, all through the proxy: {all2}, the name sent to the proxy to look up: {names_to_proxy}; the stranger without a location: {} requests, none through a proxy: {direct3}; the strip shows the proxy: {strip_shows} ({shown:?})",
+            h3.len()
+        ),
+    ));
+
+    step("locations, WebRTC");
+    // WebRTC from the strangers with a location, then from the one without
+    // (the control), each to a STUN server on this machine.
+    let rtc = format!(
+        "window.unwebRtc ? window.unwebRtc({}) : 'no probe'",
+        stun.port
+    );
+    let before = stun.count();
+    let r1 = eval_string(app, &page_label(&labels[0]), &rtc);
+    let r2 = eval_string(app, &page_label(&labels[1]), &rtc);
+    std::thread::sleep(Duration::from_secs(5));
+    let around = stun.count() - before;
+    let before_c = stun.count();
+    let r3 = eval_string(app, &page_label(&labels[2]), &rtc);
+    wait_until(Instant::now() + Duration::from_secs(6), || {
+        stun.count() > before_c
+    });
+    let control = stun.count() - before_c;
+    out.push(check(
+        "WebRTC can't go around a stranger's proxy",
+        around == 0 && !r1.is_empty() && r1 != "no probe" && !r2.is_empty() && r2 != "no probe",
+        format!(
+            "with a location, WebRTC in the page and in a frame the page made: {r1:?} and {r2:?}; packets that reached the STUN server: {around}; control, the stranger without a location: {r3:?}, {control} packets{}",
+            if control == 0 {
+                " (this engine sent none even without a proxy, so here the check only shows that nothing went out)"
+            } else {
+                ""
+            }
+        ),
+    ));
+
+    step("locations, a proxy that is down");
+    // A proxy that is down: the stranger must load nothing, rather than go
+    // direct. (The control is the first check: the same page through a
+    // working proxy.)
+    let down = Settings {
+        lang: String::new(),
+        location: loc(&format!("http://127.0.0.1:{}", closed_port())),
+    };
+    let fails_closed = "a stranger whose proxy can't be reached loads nothing";
+    match strangers.open_window(
+        app,
+        vec![(
+            Url::parse(&format!("{site_url}/proxied?who=DOWN")).ok(),
+            down,
+        )],
+    ) {
+        Ok((dwin, _)) => {
+            std::thread::sleep(Duration::from_secs(8));
+            let n = proxied_hits(site, "DOWN").len();
+            out.push(check(
+                fails_closed,
+                n == 0 && loaded,
+                format!("requests that reached the site anyway: {n} (the same page through a working proxy loaded: {loaded})"),
+            ));
+            close(app, strangers, &dwin);
+        }
+        Err(e) => out.push(check(
+            fails_closed,
+            false,
+            format!("the window didn't open: {e}"),
+        )),
+    }
+
+    step("locations, changing one");
+    // Changing the third stranger's location from its strip.
+    let third = labels[2].clone();
+    if let Ok(u) = Url::parse(&format!("{far}/proxied?who=L4")) {
+        strangers.set_typed(&win, u);
+    }
+    let _ = eval_string(
+        app,
+        &strip_label(&third),
+        &format!(
+            "window.__TAURI_INTERNALS__.invoke('set_location', {{ text: 'socks5://127.0.0.1:{}' }}); 'sent'",
+            p2.port
+        ),
+    );
+    let replaced = wait_until(Instant::now() + Duration::from_secs(40), || {
+        let t = strangers.tiles(&win);
+        t.len() == 3 && !t.contains(&third) && strangers.wipes().iter().any(|w| w.label == third)
+    });
+    let new = strangers.tiles(&win).get(2).cloned().unwrap_or_default();
+    let reached = wait_until(Instant::now() + Duration::from_secs(20), || complete("L4"));
+    std::thread::sleep(Duration::from_secs(1));
+    let (n4, all4) = came_through(site, "L4", &p2.onward_ports());
+    let old_gone = strangers.wipes().iter().any(|w| w.label == third && w.gone);
+    let settings_ok = strangers.settings(&new).location == l2.location;
+    out.push(check(
+        "changing a stranger's location opens a new stranger in its place",
+        replaced && new != third && reached && n4 >= 4 && all4 && old_gone && settings_ok,
+        format!(
+            "still three strangers with the new one third: {replaced}; it opened the typed address through the new proxy: {reached} ({n4} requests, all through it: {all4}); the old one's data deleted: {old_gone}"
+        ),
+    ));
+
+    step("setups");
+    // Saving this window as a setup, opening it again, deleting it.
+    out.push(setup_check(app, strangers, &win, site.port));
+    close(app, strangers, &win);
+    out
+}
+
+fn setup_check(app: &AppHandle, strangers: &Strangers, win: &str, site_port: u16) -> Check {
+    use crate::window::bar_label;
+    let name = "a saved setup keeps each stranger's language and location, and nothing it saw";
+    let Some(setups) = app.try_state::<Arc<crate::setups::Setups>>() else {
+        return check(name, false, "no setups".into());
+    };
+    let path = setups.path().to_path_buf();
+    let setup_name = "Self-test, three strangers";
+    let expected: Vec<crate::strangers::Settings> = strangers
+        .tiles(win)
+        .iter()
+        .map(|t| strangers.settings(t))
+        .collect();
+    bar_call(
+        app,
+        win,
+        "save_setup",
+        &format!("{{ name: '{setup_name}' }}"),
+    );
+    let saved = wait_until(Instant::now() + Duration::from_secs(10), || path.exists());
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let in_file: Vec<(String, String)> = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v["setups"]
+                .as_array()?
+                .iter()
+                .find(|s| s["name"] == setup_name)
+                .map(|s| {
+                    s["strangers"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|t| {
+                            (
+                                t["language"].as_str().unwrap_or("?").to_string(),
+                                t["location"].as_str().unwrap_or("?").to_string(),
+                            )
+                        })
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+    let want: Vec<(String, String)> = expected
+        .iter()
+        .map(|s| (s.lang.clone(), crate::location::show(s.location.as_ref())))
+        .collect();
+    let file_right = in_file == want;
+    // Nothing the strangers saw: no address, no page, no cookie.
+    let no_sights = !text.contains("far.unweb.test")
+        && !text.contains("proxied")
+        && !text.contains(&format!(":{site_port}"))
+        && !text.to_ascii_lowercase().contains("cookie");
+    let in_bar = wait_until(Instant::now() + Duration::from_secs(5), || {
+        eval_string(
+            app,
+            &bar_label(win),
+            "document.getElementById('setups').textContent",
+        )
+        .contains(setup_name)
+    });
+    let before = strangers.open_windows();
+    bar_call(
+        app,
+        win,
+        "open_setup",
+        &format!("{{ name: '{setup_name}' }}"),
+    );
+    let new_win = || {
+        strangers
+            .open_windows()
+            .into_iter()
+            .find(|w| !before.contains(w))
+    };
+    let opened = wait_until(Instant::now() + Duration::from_secs(30), || {
+        new_win().is_some_and(|w| strangers.tiles(&w).len() == expected.len())
+    });
+    let reopened = new_win()
+        .map(|w| {
+            strangers
+                .tiles(&w)
+                .iter()
+                .map(|t| strangers.settings(t))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let same = reopened == expected;
+    std::thread::sleep(Duration::from_secs(2));
+    // At Unweb's start page, with new stores of their own.
+    let fresh = new_win().is_some_and(|w| {
+        strangers.tiles(&w).iter().all(|t| {
+            Url::parse(&page_address(app, t)).is_ok_and(|u| crate::window::is_app_origin(&u))
+                && !strangers.tiles(win).contains(t)
+        })
+    });
+    if let Some(w) = new_win() {
+        close(app, strangers, &w);
+    }
+    bar_call(
+        app,
+        win,
+        "delete_setup",
+        &format!("{{ name: '{setup_name}' }}"),
+    );
+    let deleted = wait_until(Instant::now() + Duration::from_secs(10), || !path.exists());
+    check(
+        name,
+        saved && file_right && no_sights && in_bar && opened && same && fresh && deleted,
+        format!(
+            "saved: {saved}; the file holds, per stranger, language and location only: {in_file:?} (expected {want:?}): {file_right}; no address, page or cookie in it: {no_sights}; the bar lists it: {in_bar}; opened again as a new window with the same settings: {opened} {same}; its strangers new, at the start page: {fresh}; deleting the last setup deleted the file: {deleted}"
+        ),
+    )
+}
+
+/// The colour at the centre of a PNG, as RGB.
+fn png_pixels(bytes: &[u8]) -> Option<(u32, u32, Vec<[u8; 3]>)> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Indexed => return None,
+    };
+    let mut px = Vec::with_capacity((info.width * info.height) as usize);
+    for y in 0..info.height as usize {
+        let row = &buf[y * info.line_size..];
+        for x in 0..info.width as usize {
+            let p = &row[x * channels..];
+            px.push(if channels >= 3 {
+                [p[0], p[1], p[2]]
+            } else {
+                [p[0], p[0], p[0]]
+            });
+        }
+    }
+    Some((info.width, info.height, px))
+}
+
+fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter()
+        .zip(b)
+        .all(|(x, y)| (*x as i32 - y as i32).abs() <= 48)
+}
+
+/// The compare strip: screenshots of three strangers showing three colours.
+fn compare_checks(
+    app: &AppHandle,
+    strangers: &Strangers,
+    _site: &Server,
+    site_url: &str,
+) -> Vec<Check> {
+    let name = "Compare shows every stranger side by side and saves them as one image";
+    let colors: [(&str, [u8; 3]); 3] = [
+        ("ff0000", [255, 0, 0]),
+        ("00c000", [0, 192, 0]),
+        ("0000ff", [0, 0, 255]),
+    ];
+    let tiles = colors
+        .iter()
+        .map(|(c, _)| {
+            (
+                Url::parse(&format!("{site_url}/color?c={c}")).ok(),
+                crate::strangers::Settings::default(),
+            )
+        })
+        .collect();
+    let Ok((win, labels)) = strangers.open_window(app, tiles) else {
+        return vec![check(name, false, "the window didn't open".into())];
+    };
+    let painted = wait_until(Instant::now() + Duration::from_secs(20), || {
+        labels
+            .iter()
+            .zip(colors)
+            .all(|(l, (c, _))| page_address(app, l).contains(c))
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    step("compare, the strip");
+    let before: Vec<String> = app.windows().keys().cloned().collect();
+    bar_call(app, &win, "compare", "{}");
+    let cmp = || {
+        app.windows()
+            .keys()
+            .find(|k| k.starts_with(crate::compare::PREFIX) && !before.contains(k))
+            .cloned()
+    };
+    let opened = wait_until(Instant::now() + Duration::from_secs(40), || cmp().is_some());
+    let cmp_label = cmp().unwrap_or_default();
+    let view = crate::compare::view_label(&cmp_label);
+    let ready = wait_until(Instant::now() + Duration::from_secs(20), || {
+        eval_string(app, &view, "document.body.dataset.ready || ''") == "yes"
+    });
+    let page_says = eval_string(
+        app,
+        &view,
+        "document.getElementById('title').textContent + ' / ' + document.getElementById('status').textContent",
+    );
+    let Some(c) = app.try_state::<Arc<crate::compare::Compare>>() else {
+        return vec![check(name, false, "no compare state".into())];
+    };
+    let shots = c.last_shots.lock().map(|s| s.clone()).unwrap_or_default();
+    let centres: Vec<String> = shots
+        .iter()
+        .map(|png| match png_pixels(png) {
+            Some((w, h, px)) => {
+                let p = px[(h / 2 * w + w / 2) as usize];
+                format!("{w}x{h} #{:02x}{:02x}{:02x}", p[0], p[1], p[2])
+            }
+            None => "unreadable".into(),
+        })
+        .collect();
+    let shots_right = shots.len() == 3
+        && shots.iter().zip(colors).all(|(png, (_, rgb))| {
+            png_pixels(png).is_some_and(|(w, h, px)| near(px[(h / 2 * w + w / 2) as usize], rgb))
+        });
+    step("compare, Save image");
+    let saved_before = c.saved.lock().map(|s| s.len()).unwrap_or_default();
+    let _ = eval_string(
+        app,
+        &view,
+        "document.getElementById('save').click(); 'sent'",
+    );
+    let saved = wait_until(Instant::now() + Duration::from_secs(20), || {
+        c.saved.lock().map(|s| s.len()).unwrap_or_default() > saved_before
+    });
+    let file = c.saved.lock().ok().and_then(|s| s.last().cloned());
+    // Across the middle of the saved strip: the three colours, in order.
+    let order: Vec<usize> = file
+        .as_ref()
+        .and_then(|f| std::fs::read(f).ok())
+        .and_then(|b| png_pixels(&b))
+        .map(|(w, h, px)| {
+            let y = (16 + 78 + (h as usize).saturating_sub(16)) / 2;
+            let mut seen: Vec<usize> = Vec::new();
+            for x in 0..w as usize {
+                let p = px[y * w as usize + x];
+                if let Some(i) = colors.iter().position(|(_, rgb)| near(p, *rgb)) {
+                    if seen.last() != Some(&i) {
+                        seen.push(i);
+                    }
+                }
+            }
+            seen
+        })
+        .unwrap_or_default();
+    let in_order = order == vec![0, 1, 2];
+    let shown_path = eval_string(app, &view, "document.body.dataset.saved || ''");
+    if let Some(w) = app.get_window(&cmp_label) {
+        let _ = w.close();
+    }
+    let cmp_wiped = wait_until(Instant::now() + Duration::from_secs(60), || {
+        strangers
+            .wipes()
+            .iter()
+            .any(|w| w.label == cmp_label && w.gone)
+    });
+    close(app, strangers, &win);
+    vec![check(
+        name,
+        painted && opened && ready && shots_right && saved && in_order && !shown_path.is_empty() && cmp_wiped,
+        format!(
+            "three strangers showing red, green and blue: {painted}; the compare window opened: {opened}, drew the strip: {ready} ({page_says:?}); each screenshot's centre: {centres:?} (right colours: {shots_right}); Save image wrote {:?}: {saved}, and its middle row shows the colours in order: {order:?}; the window said where: {}; the compare window's own store deleted when it closed: {cmp_wiped}",
+            file.as_ref().map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            !shown_path.is_empty()
+        ),
+    )]
 }

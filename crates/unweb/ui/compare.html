@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Unweb: strangers compared</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #eef1f5; --fg: #1e293b; --muted: #64748b; --line: #cbd5e1; --field: #ffffff; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1e2430; --fg: #e2e8f0; --muted: #94a3b8; --line: #334155; --field: #111722; } }
+    html, body { margin: 0; height: 100%; }
+    body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; }
+    header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; flex: 1; }
+    button { height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--field);
+             color: var(--fg); font: inherit; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    #status.error { color: #b91c1c; }
+    main { flex: 1; overflow: auto; padding: 12px; }
+    canvas { max-width: 100%; height: auto; box-shadow: 0 1px 4px rgba(0,0,0,.15); background: #fff; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">Strangers compared</h1>
+    <span id="status" role="status"></span>
+    <button id="save" disabled title="Save this strip as a PNG in your Downloads folder">Save image</button>
+  </header>
+  <main><canvas id="strip" width="10" height="10" aria-label="Screenshots of the strangers, side by side"></canvas></main>
+  <script src="compare.js"></script>
+</body>
+</html>

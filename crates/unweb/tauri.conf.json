@@ -12,9 +12,10 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data:"
       },
-      "capabilities": ["bar", "strip"]
+      "capabilities": ["bar", "strip", "compare"]
     }
   },
   "bundle": {

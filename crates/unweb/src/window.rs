@@ -18,7 +18,7 @@ use tauri::window::WindowBuilder;
 use tauri::WindowEvent;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Url, WebviewUrl};
 
-use crate::strangers::PREFIX;
+use crate::strangers::{Settings, PREFIX};
 
 /// Height of the bar in logical pixels.
 pub const BAR_HEIGHT: f64 = 44.0;
@@ -221,7 +221,7 @@ pub fn build_window(
     let bar = store(
         WebviewBuilder::new(bar_label(label), WebviewUrl::App("bar.html".into())),
         folder,
-        "",
+        &Settings::default(),
     )
     .disable_drag_drop_handler()
     .on_navigation(bar_may_open)
@@ -252,14 +252,15 @@ pub fn build_window(
     Ok(window)
 }
 
-/// Adds a stranger's strip and page to `window`. The page starts empty;
-/// call `start_page` to give it its language and send it to `target`.
+/// Adds a stranger's strip and page to `window`, with its language and
+/// location (already checked). The page starts empty; `start_page` sends it
+/// to its first address.
 pub fn add_tile(
     app: &AppHandle,
     window: &tauri::Window,
     stranger: &str,
     folder: Option<&Path>,
-    lang: &str,
+    settings: &Settings,
 ) -> tauri::Result<()> {
     let win = window.label().to_string();
     let strip_app = app.clone();
@@ -267,7 +268,7 @@ pub fn add_tile(
     let strip = store(
         WebviewBuilder::new(strip_label(stranger), WebviewUrl::App("strip.html".into())),
         folder,
-        lang,
+        settings,
     )
     .disable_drag_drop_handler()
     .on_navigation(strip_may_open)
@@ -290,29 +291,40 @@ pub fn add_tile(
     let page = store(
         WebviewBuilder::new(page_label(stranger), blank),
         folder,
-        lang,
-    )
-    .disable_drag_drop_handler()
-    .on_navigation(page_may_open)
-    // A new window would need a store of its own; open it here instead,
-    // so it stays with this stranger.
-    .on_new_window(move |url, _| {
-        if page_may_open(&url) && !is_app_origin(&url) {
-            if let Some(p) = popup_app.get_webview(&page_label(&popup_stranger)) {
-                let _ = p.navigate(url);
+        settings,
+    );
+    // WebRTC can reach the network around a proxy: with a location it is
+    // taken away in every frame (and turned off in the engine below on
+    // Linux, kept to the proxy by WebView2's switches on Windows).
+    let page = if settings.location.is_some() {
+        page.initialization_script_for_all_frames(crate::location::NO_WEBRTC)
+    } else {
+        page
+    };
+    let page = page
+        .disable_drag_drop_handler()
+        .on_navigation(page_may_open)
+        // A new window would need a store of its own; open it here instead,
+        // so it stays with this stranger.
+        .on_new_window(move |url, _| {
+            if page_may_open(&url) && !is_app_origin(&url) {
+                if let Some(p) = popup_app.get_webview(&page_label(&popup_stranger)) {
+                    let _ = p.navigate(url);
+                }
             }
-        }
-        NewWindowResponse::Deny
-    })
-    // Downloads would land outside the stranger's folder.
-    .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
-    .on_page_load(move |_, payload| {
-        if payload.event() == PageLoadEvent::Finished || payload.event() == PageLoadEvent::Started {
-            show_address(&load_app, &load_win);
-            crate::counter::refresh_one(&load_app, &load_stranger);
-        }
-    })
-    .on_document_title_changed(move |_, _| show_address(&title_app, &title_win));
+            NewWindowResponse::Deny
+        })
+        // Downloads would land outside the stranger's folder.
+        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
+        .on_page_load(move |_, payload| {
+            if payload.event() == PageLoadEvent::Finished
+                || payload.event() == PageLoadEvent::Started
+            {
+                show_address(&load_app, &load_win);
+                crate::counter::refresh_one(&load_app, &load_stranger);
+            }
+        })
+        .on_document_title_changed(move |_, _| show_address(&title_app, &title_win));
 
     // Placed properly by `layout` once the window knows all its tiles.
     let size = LogicalSize::new(100.0, 100.0);
@@ -329,10 +341,19 @@ pub fn add_tile(
     {
         let close_app = app.clone();
         let close_stranger = stranger.to_string();
+        let no_webrtc = settings.location.is_some();
         let _ = page_view.with_webview(move |pv| {
             use webkit2gtk::{WebViewExt, WebsiteDataManagerExt};
             if let Some(m) = pv.inner().website_data_manager() {
                 m.set_persistent_credential_storage_enabled(false);
+            }
+            if no_webrtc {
+                use gtk::glib::prelude::ObjectExt;
+                if let Some(s) = WebViewExt::settings(&pv.inner()) {
+                    if s.find_property("enable-webrtc").is_some() {
+                        s.set_property("enable-webrtc", false);
+                    }
+                }
             }
             // A page that calls window.close() takes its webview away (wry
             // destroys it, and with it any other close handler). Close the
@@ -393,12 +414,14 @@ pub fn start_page(page: &tauri::Webview, target: Url) {
     let _ = page.navigate(target);
 }
 
-/// Gives a webview its store: the folder on Windows and Linux, a fresh
-/// in-memory store on macOS.
-fn store<R: tauri::Runtime>(
+/// Gives a webview its store (the folder on Windows and Linux, a fresh
+/// in-memory store on macOS), its language where the engine takes one per
+/// stranger, and its location. A stranger's strip and page get the same,
+/// since they share one store.
+pub(crate) fn store<R: tauri::Runtime>(
     b: WebviewBuilder<R>,
     folder: Option<&Path>,
-    lang: &str,
+    settings: &Settings,
 ) -> WebviewBuilder<R> {
     // WebView2 keeps compiled GPU shaders in a disk cache a page can fill
     // and later probe by timing. Turn it off (and keep wry's own default
@@ -410,13 +433,23 @@ fn store<R: tauri::Runtime>(
         let mut args = String::from(
             "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-shader-disk-cache",
         );
-        if let Some(tag) = known_language(lang).filter(|t| !t.is_empty()) {
+        if let Some(tag) = known_language(&settings.lang).filter(|t| !t.is_empty()) {
             args.push_str(&format!(" --lang={tag} --accept-lang={tag}"));
         }
+        // wry adds its own proxy switch only when the app gives none, so
+        // the location goes here too.
+        args.push_str(&crate::location::webview2_switches(
+            settings.location.as_ref(),
+        ));
         b.additional_browser_args(&args)
     };
+    // WebKitGTK takes the proxy per web context (each stranger has its
+    // own), WKWebView per data store (each stranger has its own).
     #[cfg(not(target_os = "windows"))]
-    let _ = lang;
+    let b = match &settings.location {
+        Some(l) => b.proxy_url(l.clone()),
+        None => b,
+    };
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let b = match folder {
         Some(f) => b.data_directory(f.to_path_buf()),
@@ -504,7 +537,12 @@ pub fn show_address(app: &AppHandle, window: &str) {
             back |= b;
             forward |= f;
         }
+        let setups = app
+            .try_state::<std::sync::Arc<crate::setups::Setups>>()
+            .map(|s| s.names())
+            .unwrap_or_default();
         let state = serde_json::json!({
+            "setups": setups,
             "url": shown,
             "back": back,
             "forward": forward,

@@ -9,6 +9,10 @@
     "allow-forward",
     "allow-reload",
     "allow-new-stranger",
-    "allow-side-by-side"
+    "allow-side-by-side",
+    "allow-save-setup",
+    "allow-open-setup",
+    "allow-delete-setup",
+    "allow-compare"
   ]
 }

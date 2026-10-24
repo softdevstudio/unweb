@@ -8,6 +8,11 @@
   var cookies = document.getElementById('cookies');
   var note = document.getElementById('note');
   var close = document.getElementById('close');
+  var where = document.getElementById('where');
+  var whereform = document.getElementById('whereform');
+  var whereinput = document.getElementById('whereinput');
+  var location_ = '';
+  var editing = false;
   var filled = false;
   var current = '';
 
@@ -47,8 +52,40 @@
     } else {
       cookies.textContent = text;
     }
-    close.hidden = !(s.tiles > 1);
+    close.hidden = !(s.tiles > 1) || editing;
+    location_ = s.location || '';
+    where.textContent = location_ ? location_.replace(/^http:\/\//, '') : 'Direct';
+    where.classList.toggle('proxied', !!location_);
+    where.disabled = !!s.locationNote;
+    if (s.locationNote) where.title = s.locationNote;
   };
+
+  function editWhere(on) {
+    editing = on;
+    whereform.hidden = !on;
+    lang.hidden = on;
+    where.hidden = on;
+    cookies.hidden = on;
+    if (on) {
+      close.hidden = true;
+      whereinput.value = location_;
+      whereinput.focus();
+      whereinput.select();
+    }
+  }
+  where.addEventListener('click', function () { note.textContent = ''; editWhere(true); });
+  whereinput.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { editWhere(false); }
+  });
+  whereinput.addEventListener('blur', function () { if (editing) editWhere(false); });
+  whereform.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var text = whereinput.value;
+    editWhere(false);
+    if (text.trim() === location_) return;
+    note.textContent = 'opening a new stranger…';
+    call('set_location', { text: text });
+  });
 
   lang.addEventListener('change', function () {
     if (lang.value === current) return;

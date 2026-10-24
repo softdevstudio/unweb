@@ -11,7 +11,13 @@ fn main() {
             "new_stranger",
             "side_by_side",
             "set_language",
+            "set_location",
             "close_stranger",
+            "save_setup",
+            "open_setup",
+            "delete_setup",
+            "compare",
+            "save_compare",
         ]),
     ))
     .expect("tauri build step failed");

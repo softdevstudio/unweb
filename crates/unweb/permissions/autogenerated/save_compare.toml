@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-compare"
+description = "Enables the save_compare command without any pre-configured scope."
+commands.allow = ["save_compare"]
+
+[[permission]]
+identifier = "deny-save-compare"
+description = "Denies the save_compare command without any pre-configured scope."
+commands.deny = ["save_compare"]

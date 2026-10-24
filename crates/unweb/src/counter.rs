@@ -71,7 +71,8 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
         describe(&count)
     };
     strangers.set_count(stranger, count.clone());
-    let lang = strangers.lang(stranger);
+    let settings = strangers.settings(stranger);
+    let lang = settings.lang.clone();
     let tiles = strangers
         .window_of(stranger)
         .map(|w| strangers.tiles(&w).len())
@@ -86,6 +87,8 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
         "langPerStranger": LANGUAGE_PER_STRANGER,
         "noLangReason": NO_LANGUAGE_REASON,
         "tiles": tiles,
+        "location": crate::location::show(settings.location.as_ref()),
+        "locationNote": crate::location::supported().err().unwrap_or(""),
     });
     let _ = strip.eval(format!("window.unwebStrip && window.unwebStrip({state})"));
 }
