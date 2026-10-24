@@ -29,7 +29,7 @@
 
   window.unwebCompare = function (data) {
     var panels = data.panels || [];
-    title.textContent = panels.length + ' strangers compared, ' + (data.taken || '');
+    title.textContent = (panels.length === 1 ? '1 stranger' : panels.length + ' strangers') + ', ' + (data.taken || '');
     Promise.all(panels.map(function (p) { return load(p.image); })).then(function (imgs) {
       var h = Math.min(MAX_H, Math.min.apply(null, imgs.map(function (i) { return i.naturalHeight; })));
       var widths = imgs.map(function (i) { return Math.max(1, Math.round(i.naturalWidth * h / i.naturalHeight)); });

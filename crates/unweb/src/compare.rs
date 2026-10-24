@@ -148,7 +148,11 @@ fn shown_address(page: &tauri::Webview) -> String {
 fn build(app: &AppHandle, label: &str, n: usize, folder: Option<&Path>) -> tauri::Result<()> {
     let size = ((n as f64 * 420.0 + 80.0).clamp(700.0, 1600.0), 680.0);
     let window = WindowBuilder::new(app, label)
-        .title(format!("Unweb: {n} strangers compared"))
+        .title(if n == 1 {
+            "Unweb: 1 stranger, compared".to_string()
+        } else {
+            format!("Unweb: {n} strangers compared")
+        })
         .inner_size(size.0, size.1)
         .min_inner_size(420.0, 300.0);
     #[cfg(target_os = "macos")]

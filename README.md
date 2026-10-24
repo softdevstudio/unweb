@@ -2,7 +2,7 @@
 
 A tiny browser where every visit is a first visit.
 
-Every stranger in Unweb starts with no history, no logins and no cookies, and when you close it, everything it collected is deleted. You can open several strangers at once, in separate windows or side by side in one, and each one is kept apart from the others and from your normal browser.
+Every stranger in Unweb starts with no history, no logins and no cookies, and when you close it, everything it collected is deleted. You can open several strangers at once, in separate windows or side by side in one, and each one is kept apart from the others and from your normal browser. Give a stranger a location (a proxy you have) and its traffic leaves from somewhere else, so you can see a site as a stranger elsewhere sees it.
 
 Unweb uses the web engine your system already has: WebView2 on Windows, WKWebView on macOS and WebKitGTK on Linux.
 
@@ -15,17 +15,32 @@ Each window has a bar at the top:
 - **Back, Forward and Reload.** These use the engine's own calls, so a page can't catch or block them.
 - **The address field.** Type an address and press Enter. `example.com` opens `https://example.com/`. Only web addresses open; typing words doesn't send them to a search engine.
 - **Side by side.** Adds another stranger to the window, next to the ones already there, up to four (three in a row, four as two by two). The new one opens the address you last typed in the bar (or the start page), not the address the others are on now: a site can put an identifier in its own address, and a new stranger opening it would carry it. With several strangers, the address you type goes to all of them, and Back, Forward and Reload act on all of them. It's the quick way to see whether a site shows different strangers different things.
+- **Setups.** Saves the window's strangers, each with its language and location, under a name, so you can open the same set again in a new window (four strangers in four countries, say). A setup holds only what each stranger is opened with: no address, no cookie, nothing a stranger saw. The same menu opens and deletes setups.
+- **Compare.** Takes a screenshot of every stranger in the window and shows them side by side in a window of their own, each under its language, location, cookie count and address (without the part after `?`, where sites put identifiers). Save image writes the strip as one PNG to your Downloads folder.
 - **New stranger.** Opens another window with a new stranger in it.
 
 Above each stranger is a thin strip:
 
 - **Its cookie count**, such as "18 cookies from example.com, 3 from 2 other sites". A stranger starts with no cookies, so this is exactly what the sites gave this stranger since it opened. It counts the cookies in the stranger's store, including the ones scripts can't see, and is updated every two seconds and whenever a page loads. The engine hands Unweb whole cookies; Unweb keeps only their names and domains, and shows only the counts.
 - **Its language** (Windows only), such as Deutsch or Français. The site sees it in the stranger's requests and in `navigator.language`. A stranger gets its language before its first request, so changing it opens a new stranger in its place, at the address last typed in the bar, and closes the old one with everything it collected. On Linux and macOS the menu is off and every stranger uses the system language: WebKitGTK applies its language setting to every stranger at once (a self-test run during development caught this), and WKWebView takes one language for the whole app.
+- **Its location**: Direct, or the proxy it goes through. Click it and type a proxy you have, `socks5://host:port` or `host:port` for an HTTP proxy (or `http://host:port`); leave it empty to go direct. Like the language, a location is set before the stranger's first request, so changing it opens a new stranger in its place. See [Locations](#locations).
 - **×** closes that stranger and deletes what it collected; the others carry on. It shows when a window has more than one stranger.
 
 Close a window and its strangers are gone, with everything they collected. You can also start Unweb with an address: `unweb example.com`.
 
 A link that asks for a new window opens in the same stranger, so it stays in that stranger's store. Downloads are refused for now, because a downloaded file would outlive the stranger.
+
+## Locations
+
+A stranger with a location sends everything through that proxy: pages, images, calls, frames, local addresses like `127.0.0.1` (which engines like to send direct), and the names it looks up, which the proxy resolves for it. If the proxy can't be reached, the stranger loads nothing; it never falls back to going direct. WebRTC is turned off in a stranger with a location, because it can reach the network around a proxy and show your own address.
+
+Unweb doesn't come with proxies. Use one you run or rent. HTTP proxies and SOCKS5 proxies work; proxies that ask for a user name and password don't, yet. On macOS a location needs macOS 14 or later.
+
+A location changes where a stranger's traffic comes from, not everything about it: the proxy sees all of that traffic (so only use one you trust), and the stranger still shows your computer's time zone and, unless you give it another, its language.
+
+## Saved setups
+
+Setups are the one thing Unweb keeps, and only when you save one: a small file, `setups.json`, in Unweb's settings folder (`~/.config/org.unweb.app` on Linux, `%APPDATA%\org.unweb.app` on Windows, `~/Library/Application Support/org.unweb.app` on macOS). It holds each setup's name and, for each stranger, its language and location. Deleting the last setup deletes the file. A file Unweb can't read is renamed `setups.json.bad-<time>` and left for you, never deleted.
 
 ## How a stranger is kept apart
 
@@ -43,7 +58,7 @@ Unweb also turns off what the engine would otherwise keep outside the stranger's
 
 ## What a stranger still gives away
 
-- **Your IP address and rough location.** A site still sees where the connection comes from.
+- **Your IP address and rough location**, unless you give the stranger a location: then the site sees the proxy's. The proxy itself sees everything the stranger does.
 - **Your device.** All strangers on one machine share its screen size, fonts and hardware, so a site that fingerprints devices could link them.
 - **It's not a sandbox for dangerous sites.** Your normal browser's data stays untouched, but a stranger runs on the same system engine as everything else.
 - **Your graphics driver's own caches on Windows and macOS.** The driver can keep compiled shaders in a cache of its own (DirectX's shader cache, Apple's Metal cache), shared by every program. Unweb can't turn those off, so in theory a page could recognize, by timing, that a shader was compiled on this machine before.
@@ -67,9 +82,11 @@ This runs the real app against small local servers: a site at `127.0.0.1`, a thi
 6. Stranger C, opened after A closed, must find nothing, and its plain visit must stay plain too.
 7. The bar on C: it shows the page's address; typing an address, Back, Forward and Reload work, even on a page that replaced `history.back`, `history.go` and the popstate event; nothing can load another page in the bar or a strip; a page's calls to every one of the app's commands are refused, and the names a page can read are random; `window.open` opens in the same stranger with no new window; the bar and strip keep their heights and the page fills the rest, before and after a resize; New stranger opens a stranger with a store of its own.
 8. A window with three strangers side by side, asked for German, French and the system language. The site gives the first five cookies and the others four (two by the server, one of them hidden from scripts, the rest by the page), and each strip must count exactly its own. One address typed in the bar must reach all three, and each must send back only the ID cookie the site gave it. On Windows each must send its own language and its page must see it; changing the third one's language must put a new stranger in its place, at the address typed in the bar (not one the site moved the old one to), with no earlier cookie and the new language, and delete the old one. On Linux and macOS the language menu must be off and no stranger may have been given the languages asked for. Closing one of the three must delete it and leave the others as they were. A site then sends the first stranger to an address with an identifier in it; a stranger added with Side by side must open the typed address, without it. Finally a page calls `window.close()`: its stranger must either close and have its data deleted, or stay as it was; an empty tile fails.
-9. Every window closes. No folder may be left, and no file may appear anywhere else in Unweb's own folders.
-10. On Linux, the GPU shader caches every program shares must not have changed, even though A compiled a new shader. With Unweb's setting removed, this check fails.
-11. The normal browser's folders (Edge's profile on Windows, Safari's web data on macOS, Epiphany, Firefox and Chrome profiles on Linux) and the places an engine keeps data when an app names no folder must not change.
+9. Locations. Two small proxies run locally, one HTTP and one SOCKS5, and log every connection they make onward; the site logs the port each request came from, so it can tell which requests came through which proxy. In a window with three strangers, one goes through the HTTP proxy to `127.0.0.1`, one through the SOCKS5 proxy to `far.unweb.test`, a name only the proxies can look up, and one goes direct (the control). Every request of the first two (the page, an image, a call and a frame) must have come through its own proxy, the SOCKS5 proxy must have been given the name to look up, and the direct stranger must not have used a proxy at all. WebRTC in the two with a location, and in a frame their page makes, must not reach a STUN server on this machine (the direct stranger is the control). A stranger whose proxy is down must send the site nothing. Changing the third stranger's location from its strip must open a new stranger in its place, at the address typed in the bar, going through the new proxy, and delete the old one. Then the window is saved as a setup: the file must hold each stranger's language and location and nothing else (no address, page or cookie), the bar must list it, opening it must give a new window of new strangers with the same settings at the start page, and deleting it must delete the file.
+10. Compare. Three strangers show a red, a green and a blue page. Compare must open its window with a screenshot of each whose centre is that stranger's colour, and Save image must write a PNG whose middle row shows red, green and blue in that order. The compare window's own store must be deleted when it closes.
+11. Every window closes. No folder may be left, and no file may appear anywhere else in Unweb's own folders.
+12. On Linux, the GPU shader caches every program shares must not have changed, even though A compiled a new shader. With Unweb's setting removed, this check fails.
+13. The normal browser's folders (Edge's profile on Windows, Safari's web data on macOS, Epiphany, Firefox and Chrome profiles on Linux) and the places an engine keeps data when an app names no folder must not change.
 
 The HSTS check needs a certificate the engine trusts. `scripts/test-ca.sh` makes a throwaway one and trusts it system-wide, so it is only for test machines; CI runs it on its throwaway runners. Without it the HSTS check reports "not run" (and fails in CI).
 
