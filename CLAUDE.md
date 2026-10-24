@@ -124,6 +124,16 @@ October 24, 2026, session 4 (version 0.3) done, at YK's word "go":
 - Independent review in two rounds by a fresh reviewer with probes on Linux. Round 1: a setup with a bad location opened that stranger direct (medium); two copies saving setups could lose the file; screenshots kept in memory; caption paths; Downloads fallback; Windows name lookups. Round 2: the macOS 14 symbols (minimum raised), small leaks in an override since removed, a three-copy race on deleting the last setup (stated in Design).
 - After a work loop in this session, YK asked for guardrails (saved in memory): at most two fix rounds on one failure, then report the blocker and options.
 
+October 24, 2026: v0.3.0 published by the release workflow on its second run. The first run's installed-build self-test failed on Windows and Intel macOS, but its single long annotation was cut off before the failing lines; the workflow now posts failed checks first, in short annotations, and the second run passed on every platform.
+
+October 24, 2026, session 5 (site) done, at YK's word "go ahead":
+
+- photozeitgeist/unweb.org held a copy of the Launch template with an earlier project's content. Its pages, posts and images were removed; themes/, archetypes/, README.md, .gitignore and content/archive/_index.md are unchanged. config.toml has Unweb's values: hero, four figures from test/results/latest/linux (26 files deleted, 0 traces, 30 checks, Apache 2.0), Reference and Case Studies menu items and a default share image.
+- Pages: about, contact, quick start, download (macOS 14 noted, 0.2.0 for older Macs), reference (every part, locations with the macOS gaps, setups file paths, Compare, what it can't hide). Posts dated 2026-10-24: the launch, what browsers remember, how it was tested, the name. Images in static/images: two real screenshots of Unweb on a made-up shop page served locally, three drawn images.
+- At YK's word ("create case studies/use examples at the website, add to softdevstudio.com listing and notes"): three case studies (tag "case studies": hotel returning-visitor price, news paywall meter, shop cookies before the banner) and two use examples (tag "use examples": prices by country through two proxies, a saved setup), each with a real screenshot; examples/case-studies/server.py (Python, stdlib) serves the made-up sites and two stand-in proxies. Compare captions now keep the port.
+- Hugo couldn't be installed here (refused), so the site was checked by parsing front matter and checking every internal link and image; the live feed at unweb.org lists every post.
+- softdevstudio.com lists Unweb as the thirty-first project (data/studio.toml) with a note on 0.1.0 to 0.3.0; its CONTENT-PLAN.md has the brief, names, tag, footer, feeds row and session log row 2r.
+
 ## Next
 
-Session 5 (the unweb.org site) approved by YK ("go ahead", October 24, 2026) and in progress. Nothing beyond it approved yet.
+All five plan items are done. Nothing beyond this is approved. Waiting for YK.
