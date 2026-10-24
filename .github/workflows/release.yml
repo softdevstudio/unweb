@@ -116,7 +116,25 @@ jobs:
           tool: tauri-cli@2.12.4
       - name: Build installers
         working-directory: crates/unweb
-        run: cargo tauri build --bundles ${{ matrix.bundles }} --ci
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/build-installers.log"
+          # Retry only the known transient disk-image eject failure, once.
+          # Never detach arbitrary runner disks or retry compilation errors.
+          for attempt in 1 2; do
+            part="$RUNNER_TEMP/build-installers-$attempt.log"
+            status=0
+            cargo tauri build --bundles ${{ matrix.bundles }} --ci > "$part" 2>&1 || status=$?
+            cat "$part" | tee -a "$log"
+            if [ "$status" -eq 0 ]; then break; fi
+            if [ "${{ runner.os }}" != macOS ] || [ "$attempt" -eq 2 ] ||
+               ! grep -q 'error running bundle_dmg.sh' "$part" ||
+               ! grep -q 'Resource busy' "$part"; then
+              exit "$status"
+            fi
+            echo "::warning::Disk image was busy; retrying packaging once after 10 seconds"
+            sleep 10
+          done
       # The self-test's HSTS check needs a trusted test certificate; the
       # runner is thrown away afterwards (see scripts/test-ca.sh).
       - name: Test certificate for the HSTS check
@@ -205,6 +223,16 @@ jobs:
           [ -n "$bad" ] && post error "self-test failed checks" "$bad"
           post notice "self-test" "$(grep -E '^(engine:|selftest)' "$f" | cut -c1-400 || true)"
           post notice "self-test last lines" "$(tail -n 12 "$f" | cut -c1-400)"
+      - name: Preserve build and installed-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/build-installers*.log
+            ${{ runner.temp }}/selftest.log
+            st-*/selftest.json
+          if-no-files-found: ignore
       - name: Collect installers
         run: |
           set -euo pipefail
@@ -226,7 +254,7 @@ jobs:
           ls -l dist
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
+          name: installers-${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
 
@@ -240,6 +268,7 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
+          pattern: installers-*
           path: dist
           merge-multiple: true
       - name: Checksums

@@ -138,6 +138,13 @@ October 24, 2026, at YK's word (homepage image "kinda lame", more case studies; 
 
 October 24, 2026, version 0.3.1 (the Linux layout fix): independent review in two rounds by a fresh reviewer with probes and gdb. Round 1: dropping a closed stranger's cell destroyed the webviews still in it, so a layout run with an out-of-date list could close a live stranger; fixed by detaching first and by reading the stranger list on the main thread when the layout runs (an empty list makes no grid). Round 2 confirmed both with gdb (no webview destroyed from the layout), found no deadlock risk and no regressions. Left, very low: a layout queued between forget_window and the window's destroy can leak one gtk::Grid; and if add_tile fails after a concurrent layout during a location change, the old stranger is put back with no cell (pre-existing). Self-test passes on Linux (recorded); CI passed on all three at b4d2a7b. The release run failed at the Intel macOS installer build (the "Build installers" step; its log can't be read from the cloud session) while Linux, Windows and macOS arm64 built; the rerun was cancelled at YK's word ("Stop it"). v0.3.1 is not published; 0.3.0 is the latest release.
 
+October 24, 2026, release stabilization authorized by YK ("go") after repository review:
+
+- Retrieved the Intel macOS installer log: Rust compilation succeeded; bundle_dmg.sh failed because hdiutil could not eject a busy temporary disk.
+- Release packaging now retries only that specific macOS failure once, after ten seconds. Other failures stop immediately. Build logs and installed-build self-test JSON are retained as diagnostics, separately from installer artifacts.
+- Validated YAML and exercised the build step with mock commands: success, compilation failure, transient busy disk, repeated busy disk and Linux failure. All five behave as expected. Runtime verification remains in CI because this workspace has no Rust toolchain.
+- Independent workflow review found no blocking issues; confirmed bounded retry, failure propagation and artifact separation. Actual Intel packaging and installed-build verification remain pending in CI.
+
 ## Gaps and to do
 
 Kept here for any agent working on this repository (Claude reads this file; AGENTS.md points other agents here). Update it when an item is done or found.
@@ -164,4 +171,4 @@ Stated gaps (in the README and on the site; not planned work):
 
 ## Next
 
-All five plan items are done. Nothing beyond this is approved. Waiting for YK.
+Release stabilization is approved. Complete independent review, run CI and verify installed packages before publishing 0.3.1; then report this session. Later correctness and website work remain for subsequent sessions.
