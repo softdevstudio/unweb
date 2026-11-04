@@ -2366,10 +2366,12 @@ fn location_checks(
             let down_labels = strangers.tiles(&dwin);
             let blocked: Vec<Option<&str>> =
                 down_labels.iter().map(|l| strangers.blocked(l)).collect();
+            // The stranger aimed at the name must have been blocked by its
+            // relay (on macOS, where every location has one); requests to an
+            // address may never reach a relay there.
             let blocked_right = !ALWAYS_RELAY
-                || blocked
-                    .iter()
-                    .all(|b| *b == Some(crate::relay::NOT_ANSWERING));
+                || named.is_none()
+                || blocked.last().copied().flatten() == Some(crate::relay::NOT_ANSWERING);
             out.push(check(
                 fails_closed,
                 (n == 0 || !judged_loopback)
@@ -2539,9 +2541,10 @@ fn sign_in_check(
         name,
         loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && n3 == 0 && n4 == 0 && blocked_both && strip_right && note_right,
         format!(
-            "SOCKS5 with a sign-in: {n1} requests, all through it: {all1}; HTTP with a sign-in: {n2} requests, all through it: {all2}; wrong passwords: {n3} and {n4} requests reached the site, both strangers blocked: {blocked_both}, sign-ins the proxies refused: {} and {}; the strip shows the user name without the password: {strip_right} ({shown:?}); the blocked strip says {note:?}; relays: {events:?}",
+            "SOCKS5 with a sign-in: {n1} requests, all through it: {all1}; HTTP with a sign-in: {n2} requests, all through it: {all2}; wrong passwords: {n3} and {n4} requests reached the site, both strangers blocked: {blocked_both}, sign-ins the proxies refused: {} and {}; the strip shows the user name without the password: {strip_right} ({shown:?}); the blocked strip says {note:?}; blocked: {:?}; relays: {events:?}",
             socks.refused(),
-            http.refused()
+            http.refused(),
+            labels.iter().map(|l| strangers.blocked(l)).collect::<Vec<_>>()
         ),
     )
 }

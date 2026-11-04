@@ -154,11 +154,26 @@ impl Relay {
         self.inner.held_count.load(Ordering::SeqCst)
     }
 
-    /// Reaches the proxy and signs in (an HTTP proxy is only reached: it
-    /// asks for the sign-in with the first connection). On success the
-    /// stranger is no longer blocked.
-    pub fn check(&self) -> Result<(), &'static str> {
-        let r = check_upstream(&self.inner.up);
+    /// Asks the proxy for a connection to `url`'s host, signing in as the
+    /// stranger would. When the proxy answers and takes the sign-in (whether
+    /// or not it can reach that site), the stranger is no longer blocked.
+    pub fn check(&self, url: &Url) -> Result<(), &'static str> {
+        let dest = match url.host() {
+            Some(url::Host::Domain(d)) => Dest::Name(d.to_string()),
+            Some(url::Host::Ipv4(a)) => Dest::V4(a.octets()),
+            Some(url::Host::Ipv6(a)) => Dest::V6(a.octets()),
+            None => Dest::Name("localhost".into()),
+        };
+        let port = url.port_or_known_default().unwrap_or(80);
+        let r = match open(&self.inner.up, &dest, port) {
+            Outcome::Open(s, _) => {
+                let _ = s.shutdown(Shutdown::Both);
+                Ok(())
+            }
+            Outcome::Unreachable(_) => Ok(()),
+            Outcome::Down(why) => Err(why),
+        };
+        note(&self.inner, format!("check {dest:?}:{port}: {r:?}"));
         if r.is_ok() {
             if let Ok(mut b) = self.inner.blocked.lock() {
                 *b = None;
@@ -460,15 +475,6 @@ fn socks_sign_in(s: &mut TcpStream, up: &Upstream) -> Result<(), &'static str> {
     }
 }
 
-fn check_upstream(up: &Upstream) -> Result<(), &'static str> {
-    let mut s = connect_upstream(up)?;
-    if up.socks {
-        socks_sign_in(&mut s, up)?;
-    }
-    let _ = s.shutdown(Shutdown::Both);
-    Ok(())
-}
-
 fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
     let mut s = match connect_upstream(up) {
         Ok(s) => s,
@@ -670,7 +676,9 @@ mod tests {
             let p = peers.lock().unwrap().clone();
             assert!(proxy.onward_ports().iter().all(|x| p.contains(x)), "{loc}");
             assert_eq!(proxy.onward()[0].host, "far.unweb.test", "{loc}");
-            assert!(r.check().is_ok());
+            assert!(r
+                .check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap())
+                .is_ok());
         }
     }
 
@@ -689,7 +697,9 @@ mod tests {
         assert_eq!(code2, None);
         assert!(rx.try_recv().is_err());
         assert_eq!(r.held(), 2);
-        assert!(r.check().is_err());
+        assert!(r
+            .check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap())
+            .is_err());
         assert!(peers.lock().unwrap().is_empty());
         // The engine giving up frees its place.
         drop(c1);
@@ -714,7 +724,18 @@ mod tests {
         let (_c, code) = ask(r.port(), "127.0.0.1", port);
         assert_eq!(code, None);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(SIGN_IN_REFUSED));
-        assert_eq!(r.check(), Err(SIGN_IN_REFUSED));
+        assert_eq!(
+            r.check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()),
+            Err(SIGN_IN_REFUSED)
+        );
+        let (r4, _) = relay(&format!(
+            "http://ann:wrong@127.0.0.1:{}",
+            Proxy::http_sign_in("ann", "right").unwrap().port
+        ));
+        assert_eq!(
+            r4.check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()),
+            Err(SIGN_IN_REFUSED)
+        );
         // No credentials at all, to a proxy that wants them.
         let (r2, rx2) = relay(&format!("socks5://127.0.0.1:{}", socks.port));
         let _ = ask(r2.port(), "127.0.0.1", port);
@@ -761,7 +782,9 @@ mod tests {
         assert_eq!(ask(r.port(), "127.0.0.1", port).1, None);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(NOT_ANSWERING));
         proxy.set_down(false);
-        assert!(r.check().is_ok());
+        assert!(r
+            .check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap())
+            .is_ok());
         assert_eq!(r.blocked(), None);
         assert_eq!(ask(r.port(), "127.0.0.1", port).1, Some(0));
     }

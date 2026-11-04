@@ -386,7 +386,7 @@ impl Strangers {
         let app = app.clone();
         let label = label.to_string();
         std::thread::spawn(move || {
-            let ok = relay.check().is_ok();
+            let ok = relay.check(&url).is_ok();
             if let Some(s) = app.try_state::<Arc<Strangers>>() {
                 if let Ok(mut c) = s.checking.lock() {
                     c.remove(&label);
