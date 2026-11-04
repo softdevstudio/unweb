@@ -1,0 +1,64 @@
+{
+  "format": "unweb-compare",
+  "format_version": 1,
+  "strangers": [
+    {
+      "address": "http://127.0.0.1:45681/color",
+      "cookie_line": "0 cookies from 127.0.0.1",
+      "cookies": {
+        "other_site_count": 0,
+        "other_sites": 0,
+        "site": "127.0.0.1",
+        "this_site": 0,
+        "this_site_http_only": 0
+      },
+      "height": 788,
+      "language": "System language",
+      "language_tag": "",
+      "location": null,
+      "number": 1,
+      "screenshot": "stranger-1.png",
+      "width": 467
+    },
+    {
+      "address": "http://127.0.0.1:45681/color",
+      "cookie_line": "0 cookies from 127.0.0.1",
+      "cookies": {
+        "other_site_count": 0,
+        "other_sites": 0,
+        "site": "127.0.0.1",
+        "this_site": 0,
+        "this_site_http_only": 0
+      },
+      "height": 788,
+      "language": "System language",
+      "language_tag": "",
+      "location": null,
+      "number": 2,
+      "screenshot": "stranger-2.png",
+      "width": 467
+    },
+    {
+      "address": "http://127.0.0.1:45681/color",
+      "cookie_line": "0 cookies from 127.0.0.1",
+      "cookies": {
+        "other_site_count": 0,
+        "other_sites": 0,
+        "site": "127.0.0.1",
+        "this_site": 0,
+        "this_site_http_only": 0
+      },
+      "height": 788,
+      "language": "System language",
+      "language_tag": "",
+      "location": null,
+      "number": 3,
+      "screenshot": "stranger-3.png",
+      "width": 466
+    }
+  ],
+  "strip": "strip.png",
+  "taken": "2026-11-04T09:38:09Z",
+  "typed_address": "http://127.0.0.1:45681/color",
+  "unweb": "0.3.1"
+}
