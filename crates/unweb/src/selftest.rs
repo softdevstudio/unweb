@@ -2274,8 +2274,9 @@ fn location_checks(
         through,
         loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && direct3 && names_to_proxy && strip_shows,
         format!(
-            "HTTP proxy, {l1_base}: {n1} requests, all through the proxy: {all1}; SOCKS5 proxy, a name only the proxy knows: {n2} requests, all through the proxy: {all2}, the name sent to the proxy to look up: {names_to_proxy}; the stranger without a location: {} requests, none through a proxy: {direct3}; the strip shows the proxy: {strip_shows} ({shown:?})",
-            h3.len()
+            "HTTP proxy, {l1_base}: {n1} requests, all through the proxy: {all1}; SOCKS5 proxy, a name only the proxy knows: {n2} requests, all through the proxy: {all2}, the name sent to the proxy to look up: {names_to_proxy}; the stranger without a location: {} requests, none through a proxy: {direct3}; the strip shows the proxy: {strip_shows} ({shown:?}); relays: {:?}",
+            h3.len(),
+            labels.iter().map(|l| strangers.relay_events(l)).collect::<Vec<_>>()
         ),
     ));
 
