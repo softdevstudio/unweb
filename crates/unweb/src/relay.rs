@@ -18,9 +18,10 @@
 //! could use it while the stranger is open (pages can't, as they can't
 //! speak SOCKS5). It stops when the stranger is gone.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,9 +68,23 @@ struct Inner {
     up: Upstream,
     blocked: Mutex<Option<&'static str>>,
     stopping: AtomicBool,
-    held: Mutex<Vec<TcpStream>>,
+    held: Mutex<HashMap<u64, TcpStream>>,
     held_count: AtomicUsize,
+    next_id: AtomicU64,
     on_block: OnBlock,
+    /// What the relay did, most recent last (for the self-test's details).
+    events: Mutex<Vec<String>>,
+}
+
+const MAX_EVENTS: usize = 200;
+
+fn note(inner: &Inner, e: String) {
+    if let Ok(mut v) = inner.events.lock() {
+        if v.len() >= MAX_EVENTS {
+            v.remove(0);
+        }
+        v.push(e);
+    }
 }
 
 pub struct Relay {
@@ -99,9 +114,11 @@ impl Relay {
             up,
             blocked: Mutex::new(None),
             stopping: AtomicBool::new(false),
-            held: Mutex::new(Vec::new()),
+            held: Mutex::new(HashMap::new()),
             held_count: AtomicUsize::new(0),
+            next_id: AtomicU64::new(1),
             on_block,
+            events: Mutex::new(Vec::new()),
         });
         let i = inner.clone();
         std::thread::spawn(move || accept_loop(listener, i));
@@ -120,6 +137,15 @@ impl Relay {
     /// Why the stranger is blocked, if it is.
     pub fn blocked(&self) -> Option<&'static str> {
         self.inner.blocked.lock().ok().and_then(|b| *b)
+    }
+
+    /// What the relay did, oldest first.
+    pub fn events(&self) -> Vec<String> {
+        self.inner
+            .events
+            .lock()
+            .map(|e| e.clone())
+            .unwrap_or_default()
     }
 
     /// How many connections are being held.
@@ -154,7 +180,7 @@ impl Relay {
             Duration::from_secs(1),
         );
         if let Ok(mut h) = self.inner.held.lock() {
-            for s in h.drain(..) {
+            for (_, s) in h.drain() {
                 let _ = s.shutdown(Shutdown::Both);
             }
         }
@@ -173,6 +199,10 @@ fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
             break;
         }
         let Ok(stream) = stream else { continue };
+        note(
+            &inner,
+            format!("accepted from {:?}", stream.peer_addr().ok()),
+        );
         // Only this computer, though it listens on loopback anyway.
         if !stream
             .peer_addr()
@@ -241,6 +271,7 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
     let mut methods = vec![0u8; b[1] as usize];
     engine.read_exact(&mut methods)?;
     if !methods.contains(&0) {
+        note(inner, format!("refused methods {methods:?}"));
         engine.write_all(&[5, 0xff])?;
         return Ok(());
     }
@@ -248,6 +279,7 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
     let mut req = [0u8; 4];
     engine.read_exact(&mut req)?;
     if req[0] != 5 || req[1] != 1 {
+        note(inner, format!("refused request {req:?}"));
         // Only CONNECT.
         engine.write_all(&reply(7))?;
         return Ok(());
@@ -289,10 +321,23 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
 
     let blocked = inner.blocked.lock().map(|b| b.is_some()).unwrap_or(true);
     if blocked || inner.stopping.load(Ordering::SeqCst) {
+        note(inner, format!("{dest:?}:{port} held (blocked)"));
         hold(engine, inner);
         return Ok(());
     }
-    match open(&inner.up, &dest, port) {
+    let outcome = open(&inner.up, &dest, port);
+    note(
+        inner,
+        format!(
+            "{dest:?}:{port} {}",
+            match &outcome {
+                Outcome::Open(..) => "open".to_string(),
+                Outcome::Unreachable(c) => format!("unreachable {c}"),
+                Outcome::Down(w) => format!("down: {w}"),
+            }
+        ),
+    );
+    match outcome {
         Outcome::Open(up, early) => {
             engine.write_all(&SUCCESS)?;
             engine.write_all(&early)?;
@@ -334,25 +379,34 @@ fn block(inner: &Inner, why: &'static str) {
 /// Keeps the engine's connection open, unanswered, until the engine gives
 /// up on it or the relay stops.
 fn hold(engine: TcpStream, inner: &Inner) {
+    let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
     if let Ok(c) = engine.try_clone() {
         if let Ok(mut h) = inner.held.lock() {
-            h.push(c);
+            h.insert(id, c);
         }
     }
     inner.held_count.fetch_add(1, Ordering::SeqCst);
-    let _ = engine.set_read_timeout(None);
+    // Woken every second to see whether the relay is stopping (a shutdown
+    // from another thread doesn't wake a read on every system).
+    let _ = engine.set_read_timeout(Some(Duration::from_secs(1)));
     let mut e = engine;
     let mut buf = [0u8; 512];
     while !inner.stopping.load(Ordering::SeqCst) {
         match e.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(_) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
         }
     }
+    let _ = e.shutdown(Shutdown::Both);
     inner.held_count.fetch_sub(1, Ordering::SeqCst);
-    if let (Ok(mut h), Ok(me)) = (inner.held.lock(), e.local_addr()) {
-        let peer = e.peer_addr().ok();
-        h.retain(|s| !(s.local_addr().ok() == Some(me) && s.peer_addr().ok() == peer));
+    if let Ok(mut h) = inner.held.lock() {
+        h.remove(&id);
     }
 }
 

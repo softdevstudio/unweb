@@ -360,6 +360,15 @@ impl Strangers {
             .and_then(|m| m.get(label).map(|r| r.port()))
     }
 
+    /// What stranger `label`'s relay did (for the self-test's details).
+    pub fn relay_events(&self, label: &str) -> Vec<String> {
+        self.relays
+            .lock()
+            .ok()
+            .and_then(|m| m.get(label).map(|r| r.events()))
+            .unwrap_or_default()
+    }
+
     /// A blocked stranger was asked to open `url`: checks its proxy (off
     /// this thread) and opens the address only once the proxy answers.
     pub fn retry(&self, app: &AppHandle, label: &str, url: Url) {

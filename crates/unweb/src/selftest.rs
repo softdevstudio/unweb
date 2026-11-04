@@ -2356,7 +2356,10 @@ fn location_checks(
                         None => "not tried (no network address)".into(),
                     },
                     if ALWAYS_RELAY {
-                        format!("each stranger blocked by its relay: {blocked:?}; ")
+                        format!(
+                            "each stranger blocked by its relay: {blocked:?} (relay: {:?}); ",
+                            down_labels.iter().map(|l| strangers.relay_events(l)).collect::<Vec<_>>()
+                        )
                     } else {
                         String::new()
                     }
@@ -2497,12 +2500,13 @@ fn sign_in_check(
     );
     let strip_right = shown.contains("ann@") && !shown.contains("s3cret");
     let note_right = note.contains("refused");
+    let events: Vec<Vec<String>> = labels.iter().map(|l| strangers.relay_events(l)).collect();
     close(app, strangers, &win);
     check(
         name,
         loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && n3 == 0 && n4 == 0 && blocked_both && strip_right && note_right,
         format!(
-            "SOCKS5 with a sign-in: {n1} requests, all through it: {all1}; HTTP with a sign-in: {n2} requests, all through it: {all2}; wrong passwords: {n3} and {n4} requests reached the site, both strangers blocked: {blocked_both}, sign-ins the proxies refused: {} and {}; the strip shows the user name without the password: {strip_right} ({shown:?}); the blocked strip says {note:?}",
+            "SOCKS5 with a sign-in: {n1} requests, all through it: {all1}; HTTP with a sign-in: {n2} requests, all through it: {all2}; wrong passwords: {n3} and {n4} requests reached the site, both strangers blocked: {blocked_both}, sign-ins the proxies refused: {} and {}; the strip shows the user name without the password: {strip_right} ({shown:?}); the blocked strip says {note:?}; relays: {events:?}",
             socks.refused(),
             http.refused()
         ),
@@ -2568,12 +2572,13 @@ fn stops_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str
         });
     }
     let (n, all) = came_through(site, "ST", &proxy.onward_ports());
+    let events = strangers.relay_events(&labels[0]);
     close(app, strangers, &win);
     check(
         name,
         loaded && leaked == 0 && blocked && blank && back && all,
         format!(
-            "the page loaded through the proxy: {loaded}; after the proxy stopped, requests that reached the site: {leaked}; {}every request of this stranger came through the proxy: {all} ({n})",
+            "the page loaded through the proxy: {loaded}; after the proxy stopped, requests that reached the site: {leaked}; {}every request of this stranger came through the proxy: {all} ({n}); relay: {events:?}",
             if relayed {
                 format!("the stranger was blocked: {blocked}, its page cleared: {blank}; with the proxy back, Reload loaded the address again: {back}; ")
             } else {
@@ -2623,12 +2628,13 @@ fn refused_site_check(app: &AppHandle, strangers: &Strangers, site: &Server, bas
     std::thread::sleep(Duration::from_secs(6));
     let leaked = proxied_hits(site, "RF2").len();
     let blocked = strangers.blocked(&labels[0]);
+    let events = strangers.relay_events(&labels[0]);
     close(app, strangers, &win);
     check(
         name,
         loaded && leaked == 0 && blocked.is_none(),
         format!(
-            "the page loaded through the proxy: {loaded}; once the proxy refused the site, requests that reached it: {leaked}; the stranger blocked (it shouldn't be, the proxy works): {blocked:?}"
+            "the page loaded through the proxy: {loaded}; once the proxy refused the site, requests that reached it: {leaked}; the stranger blocked (it shouldn't be, the proxy works): {blocked:?}; relay: {events:?}"
         ),
     )
 }
