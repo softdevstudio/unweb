@@ -2530,11 +2530,17 @@ fn sign_in_check(
         &strip_label(&labels[0]),
         "document.getElementById('where').textContent + ' | ' + document.getElementById('whereinput').value",
     );
-    let note = eval_string(
-        app,
-        &strip_label(&labels[2]),
-        "document.getElementById('cookies').textContent",
-    );
+    // The strip is told by its next refresh (every two seconds, after the
+    // cookie store is read).
+    let mut note = String::new();
+    wait_until(Instant::now() + Duration::from_secs(10), || {
+        note = eval_string(
+            app,
+            &strip_label(&labels[2]),
+            "document.getElementById('cookies').textContent",
+        );
+        note.contains("refused")
+    });
     let strip_right = shown.contains("ann@") && !shown.contains("s3cret");
     let note_right = note.contains("refused");
     let events: Vec<Vec<String>> = labels.iter().map(|l| strangers.relay_events(l)).collect();
@@ -2634,10 +2640,26 @@ fn hung_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str)
     use crate::strangers::Settings;
     use crate::testproxy::Proxy;
     let name = "a proxy that takes connections and never answers: nothing goes direct";
-    let Ok(proxy) = Proxy::socks5_sign_in("dy", "pw") else {
-        return check(name, false, "the test proxy didn't start".into());
+    let (Ok(proxy), Ok(hproxy)) = (
+        Proxy::socks5_sign_in("dy", "pw"),
+        Proxy::http_sign_in("dy", "pw"),
+    ) else {
+        return check(name, false, "the test proxies didn't start".into());
     };
     proxy.set_hang(true);
+    hproxy.set_hang(true);
+    let hsettings = Settings {
+        lang: String::new(),
+        location: crate::location::parse_location(&format!(
+            "http://dy:pw@127.0.0.1:{}",
+            hproxy.port
+        ))
+        .ok()
+        .flatten(),
+    };
+    let Ok(hfirst) = Url::parse(&format!("{base}/proxied?who=HGH")) else {
+        return check(name, false, "no address".into());
+    };
     let settings = Settings {
         lang: String::new(),
         location: crate::location::parse_location(&format!(
@@ -2651,7 +2673,10 @@ fn hung_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str)
         return check(name, false, "no address".into());
     };
     let started = Instant::now();
-    let Ok((win, labels)) = strangers.open_window(app, vec![(Some(first), settings)]) else {
+    let Ok((win, labels)) = strangers.open_window(
+        app,
+        vec![(Some(first), settings), (Some(hfirst), hsettings)],
+    ) else {
         return check(name, false, "the window didn't open".into());
     };
     let blocked = wait_until(Instant::now() + Duration::from_secs(20), || {
@@ -2661,12 +2686,15 @@ fn hung_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str)
     let watch = if cfg!(target_os = "macos") { 90 } else { 20 };
     std::thread::sleep(Duration::from_secs(watch).saturating_sub(started.elapsed()));
     let leaked = proxied_hits(site, "HG").len();
+    let hleaked = proxied_hits(site, "HGH").len();
+    let hblocked = strangers.blocked(&labels[1]);
     close(app, strangers, &win);
     check(
         name,
-        blocked && leaked == 0,
+        blocked && leaked == 0 && hleaked == 0,
         format!(
-            "the stranger was blocked: {blocked} (after {blocked_after:.1} s); requests that reached the site in {watch} s: {leaked}"
+            "SOCKS5, silent at its greeting: the stranger was blocked: {blocked} (after {blocked_after:.1} s); HTTP, silent after CONNECT (which can only mean a slow site, so nothing loads but the stranger isn't blocked): blocked {:?}; requests that reached the site in {watch} s: {leaked} and {hleaked}",
+            hblocked
         ),
     )
 }

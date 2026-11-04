@@ -82,7 +82,7 @@ impl Proxy {
                     continue;
                 }
                 if hung.load(Ordering::SeqCst) {
-                    // Kept open, never read or answered, for a minute.
+                    // Kept open, never read or answered, for two minutes.
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_secs(120));
                         drop(stream);

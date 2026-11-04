@@ -552,9 +552,17 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
         if s.write_all(&req).is_err() {
             return Outcome::Down(NOT_ANSWERING);
         }
+        // The proxy has answered its greeting and sign-in, so it works: an
+        // answer about the site that is slow in coming means the site is
+        // slow or gone, never that the proxy is down (that would blank the
+        // whole stranger for one dead image). A proxy that hangs up on us
+        // instead counts as down.
         let mut head = [0u8; 4];
-        if s.read_exact(&mut head).is_err() || head[0] != 5 {
-            return Outcome::Down(NOT_ANSWERING);
+        match s.read_exact(&mut head) {
+            Err(e) if timed_out(&e) => return Outcome::Unreachable(4),
+            Err(_) => return Outcome::Down(NOT_ANSWERING),
+            Ok(()) if head[0] != 5 => return Outcome::Down(NOT_ANSWERING),
+            Ok(()) => {}
         }
         // The address the proxy bound, which nobody needs.
         let rest = match head[3] {
@@ -594,14 +602,14 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
         return Outcome::Down(NOT_ANSWERING);
     };
     let mut reader = BufReader::new(clone);
+    // An HTTP proxy answers only once it has reached the site, so silence
+    // may just be a slow site: a timeout is the site's, and only a proxy
+    // that hangs up counts as down.
     let mut status = String::new();
-    if (&mut reader)
-        .take(8 * 1024)
-        .read_line(&mut status)
-        .unwrap_or(0)
-        == 0
-    {
-        return Outcome::Down(NOT_ANSWERING);
+    match (&mut reader).take(8 * 1024).read_line(&mut status) {
+        Err(e) if timed_out(&e) => return Outcome::Unreachable(4),
+        Ok(0) | Err(_) => return Outcome::Down(NOT_ANSWERING),
+        Ok(_) => {}
     }
     let code: u16 = status
         .split_whitespace()
@@ -634,6 +642,13 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
         502..=504 => Outcome::Unreachable(4),
         _ => Outcome::Unreachable(1),
     }
+}
+
+fn timed_out(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
 }
 
 /// Copies both ways until either side is done.
