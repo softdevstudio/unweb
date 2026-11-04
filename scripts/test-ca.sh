@@ -6,7 +6,9 @@
 #   2. the authority trusted by the system, so the web engine accepts the
 #      certificate (an engine ignores HSTS from a site whose certificate it
 #      doesn't trust);
-#   3. hsts.unweb.test pointed at 127.0.0.1 in the hosts file.
+#   3. hsts.unweb.test and direct.unweb.test pointed at 127.0.0.1 in the
+#      hosts file (direct.unweb.test is a name the location checks use: one
+#      this computer and the test proxies both resolve).
 #
 # Then run the self-test with UNWEB_TEST_TLS=<dir>. This changes the
 # machine's trust store and hosts file, so use it on CI runners and test
@@ -67,11 +69,13 @@ case "$(uname -s)" in
     sudo cp ca.pem /usr/local/share/ca-certificates/unweb-selftest.crt
     sudo update-ca-certificates >/dev/null
     grep -q " $host\$" /etc/hosts || echo "127.0.0.1 $host" | sudo tee -a /etc/hosts >/dev/null
+    grep -q " direct.unweb.test\$" /etc/hosts || echo "127.0.0.1 direct.unweb.test" | sudo tee -a /etc/hosts >/dev/null
     ;;
   Darwin*)
     sudo security authorizationdb write com.apple.trust-settings.admin allow >/dev/null 2>&1 || true
     sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem
     grep -q " $host\$" /etc/hosts || echo "127.0.0.1 $host" | sudo tee -a /etc/hosts >/dev/null
+    grep -q " direct.unweb.test\$" /etc/hosts || echo "127.0.0.1 direct.unweb.test" | sudo tee -a /etc/hosts >/dev/null
     # Say so plainly if macOS doesn't trust the certificate now.
     if ! security verify-cert -c leaf.pem -r ca.pem -p ssl -s "$host" >/dev/null 2>&1 \
        || ! security verify-cert -c leaf.pem -p ssl -s "$host" >/dev/null 2>&1; then
@@ -85,6 +89,7 @@ case "$(uname -s)" in
     certutil -addstore -f Root ca.pem >/dev/null
     hosts=/c/Windows/System32/drivers/etc/hosts
     grep -q " $host" "$hosts" || printf '\r\n127.0.0.1 %s\r\n' "$host" >> "$hosts"
+    grep -q " direct.unweb.test" "$hosts" || printf '\r\n127.0.0.1 %s\r\n' direct.unweb.test >> "$hosts"
     ;;
 esac
 rm -f ca.key leaf.csr ca.cnf leaf.cnf ca.srl

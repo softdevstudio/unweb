@@ -2311,6 +2311,24 @@ fn location_checks(
         ),
     ));
 
+    // A name this computer and the test proxies both resolve (to
+    // 127.0.0.1; scripts/test-ca.sh adds it to the hosts file). A stranger
+    // that went around its proxy would reach the site by it, and an engine
+    // passes names to a proxy rather than look them up, so no system sends
+    // it past one the way macOS does loopback and local network addresses.
+    let named = {
+        use std::net::ToSocketAddrs;
+        ("direct.unweb.test", site.port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .filter(|a| a.ip().is_loopback())
+            .map(|_| format!("http://direct.unweb.test:{}", site.port))
+    };
+    // What the checks below aim at: that name, or where it isn't set up,
+    // the address the first check used.
+    let aim = named.clone().unwrap_or_else(|| l1_base.clone());
+
     step("locations, a proxy that is down");
     // A proxy that is down: the stranger must load nothing, rather than go
     // direct. (The control is the first check: the same page through a
@@ -2327,13 +2345,23 @@ fn location_checks(
         down.clone(),
     )];
     if let Some(u) = &lan_url {
-        down_tiles.push((Url::parse(&format!("{u}/proxied?who=DOWNLAN")).ok(), down));
+        down_tiles.push((
+            Url::parse(&format!("{u}/proxied?who=DOWNLAN")).ok(),
+            down.clone(),
+        ));
+    }
+    if let Some(u) = &named {
+        down_tiles.push((Url::parse(&format!("{u}/proxied?who=DOWNNAME")).ok(), down));
     }
     match strangers.open_window(app, down_tiles) {
         Ok((dwin, _)) => {
             std::thread::sleep(Duration::from_secs(8));
             let n = proxied_hits(site, "DOWN").len();
             let n_lan = proxied_hits(site, "DOWNLAN").len();
+            let n_name = proxied_hits(site, "DOWNNAME").len();
+            // macOS sends some requests to addresses written as numbers past
+            // a proxy (seen with local network addresses); by name, never.
+            let judged_lan = !ALWAYS_RELAY;
             let judged_loopback = !LOOPBACK_SKIPS_PROXY;
             let down_labels = strangers.tiles(&dwin);
             let blocked: Vec<Option<&str>> =
@@ -2345,17 +2373,21 @@ fn location_checks(
             out.push(check(
                 fails_closed,
                 (n == 0 || !judged_loopback)
-                    && n_lan == 0
-                    && (judged_loopback || lan_url.is_some())
+                    && (n_lan == 0 || !judged_lan)
+                    && n_name == 0
+                    && (judged_loopback || lan_url.is_some() || named.is_some())
+                    && (judged_lan || named.is_some() || std::env::var_os("CI").is_none())
                     && loaded
                     && blocked_right,
                 format!(
-                    "requests that reached the site anyway: to a loopback address {n}{}, to this machine's network address {}; {}the same page through a working proxy loaded: {loaded}",
+                    "requests that reached the site anyway: to a loopback address {n}{}, to this machine's network address {}{}, by a name this computer resolves {}; {}the same page through a working proxy loaded: {loaded}",
                     if judged_loopback { "" } else { " (this system sends loopback past any proxy, so not judged)" },
                     match &lan_url {
                         Some(_) => n_lan.to_string(),
                         None => "not tried (no network address)".into(),
                     },
+                    if judged_lan { "" } else { " (macOS sends some of these past a proxy, so not judged)" },
+                    if named.is_some() { n_name.to_string() } else { "not tried (direct.unweb.test isn't set up)".into() },
                     if ALWAYS_RELAY {
                         format!(
                             "each stranger blocked by its relay: {blocked:?} (relay: {:?}); ",
@@ -2376,11 +2408,11 @@ fn location_checks(
     }
 
     step("locations, sign-in");
-    out.push(sign_in_check(app, strangers, site, &far, &l1_base));
+    out.push(sign_in_check(app, strangers, site, &far, &aim));
     step("locations, a proxy that stops");
-    out.push(stops_check(app, strangers, site, &l1_base));
+    out.push(stops_check(app, strangers, site, &aim));
     step("locations, a site the proxy can't reach");
-    out.push(refused_site_check(app, strangers, site, &l1_base));
+    out.push(refused_site_check(app, strangers, site, &aim));
 
     step("locations, changing one");
     // Changing the third stranger's location from its strip.
