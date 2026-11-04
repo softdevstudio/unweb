@@ -146,6 +146,32 @@ October 24, 2026, release stabilization authorized by YK ("go") after repository
 - Independent workflow review found no blocking issues; confirmed bounded retry, failure propagation and artifact separation.
 - CI passed on Linux, Windows and Apple silicon macOS at 47366e2. Release run 40085265341 passed all four build jobs and installed-package self-tests (Linux .deb and AppImage, both macOS .dmg architectures, Windows .msi), then published v0.3.1 with five installers and SHA256SUMS. Diagnostics are retained as separate workflow artifacts.
 
+## Unweb 0.4 (softdev-plan item 21, approved by YK 2026-11-04)
+
+What and why: a stranger with a location is the paid use (SEO, ad checks, prices by country), and the proxies people pay for need a user name and password, which Unweb refuses. On macOS a stranger whose proxy is down goes direct and shows the person's real address, the one thing a location must never do. Compare is only an image, while ad-verification and SEO people need a record they can hand on. The softdevstudio.com note stops at 0.3.0.
+
+Design decisions:
+- Phase A1, credentials: a location may be `http://user:pass@host:port` or `socks5://user:pass@host:port` (percent-encoded as in any address; user name and password 1 to 255 bytes each after decoding, no control characters; an HTTP proxy's user name can't hold a colon, as Basic auth can't carry one). The strip shows `user@host:port`, never the password; Compare captions, the report and the self-test output show neither. Saved setups keep the user name and password (setups.json, written owner-only on Unix; the README says so plainly, since the file is plain text).
+- Phase A2, a relay of Unweb's own (relay.rs) per stranger, on 127.0.0.1 at a random port: an unauthenticated SOCKS5 proxy (CONNECT only, names passed on, no other command) that chains every connection to the person's proxy: SOCKS5 with user name and password (RFC 1929) or HTTP CONNECT with a Basic Proxy-Authorization header. The engine is given the relay instead of the proxy on macOS for every location (the kill switch) and elsewhere when the location has a user name (no engine can be given SOCKS5 credentials: Chromium has no SOCKS5 sign-in). Without a user name, Linux and Windows keep 0.3's direct proxy setting, which already fails closed. Through the relay an HTTP proxy sees every connection as CONNECT, plain http:// pages too (macOS already did this in 0.3); the README says a proxy that only allows CONNECT to port 443 then refuses http:// pages.
+- Kill switch: when the person's proxy can't be reached, or refuses the user name and password, the relay never answers the engine with a failure (a failure is what macOS answers by going direct; 0.3's relay answered 502 and macOS went direct). It holds the connection, marks the stranger blocked, sends its page to about:blank, and the strip says "Proxy not answering: nothing loads". While blocked the page may not open http or https; Go or Reload first checks the proxy (connect and sign in) and opens the address only once it answers. A site the working proxy can't reach is answered with a SOCKS5 failure on Linux and Windows, and on macOS with success followed by a close (never a failure there). Held connections are closed when the stranger closes; at most 64 are held, and further ones wait unaccepted.
+- Stated, not fixed: while a stranger with a relay is open, other programs on this computer could send traffic through its relay (pages can't: they can't speak SOCKS5). macOS still sends loopback addresses past any proxy.
+- Phase B, Compare report: Save report writes a new folder `unweb-compare-<UTC>` in Downloads (never over an existing one; `-2` and so on) holding report.html (static, no scripts, every text escaped), strip.png (what Save image saves), stranger-N.png per stranger and report.json (format "unweb-compare" version 1: Unweb's version, the time, the address typed, and per stranger its number, language, location without credentials, cookie counts, address as scheme, host, port and path, screenshot file name and size). The captions come from the app's record of that compare window, not from the page; the page sends only the images, each checked to be a PNG. A failed write removes the folder.
+- Self-test: proxies with sign-in in testproxy.rs (HTTP Basic and SOCKS5 user name and password); right credentials load through them, wrong ones load nothing and block the stranger; the proxy-down check is judged on macOS too (DOWN_PROXY_GOES_DIRECT goes); a proxy that stops while its page is open blocks the stranger and nothing reaches the site direct; a site the proxy refuses isn't reached direct; Save report's files (JSON parsed, PNGs counted and read, no password in any file).
+- Done when (softdev-plan): with the proxy down, a macOS stranger loads nothing (the self-test on macos-latest and the installed .dmg build).
+- Upkeep: the softdevstudio.com note for 0.4.0 also covers 0.3.1.
+- Version 0.4.0.
+
+Steps:
+1. [x] Phase 0: this plan.
+2. [ ] A1 credentials in location.rs and setups, unit tests.
+3. [ ] A2 relay.rs with unit tests against the test proxies (chaining, sign-in, down, refused destination, holding, shutdown); wired into strangers, the page's navigation and the strip.
+4. [ ] B Compare report, unit tests.
+5. [ ] Self-test checks, passing on Linux locally and on all three in CI.
+6. [ ] README, Design and Gaps here.
+7. [ ] Independent review (at most two rounds), fixes, fresh test/results.
+8. [ ] 0.4.0 released by the workflow; assets checked at the tag and latest; a downloaded build run.
+9. [ ] unweb.org post with its own image and page updates; softdevstudio.com note (0.3.1 and 0.4.0) and listing; softdev-plan item 21 done with a log row.
+
 ## Gaps and to do
 
 Kept here for any agent working on this repository (Claude reads this file; AGENTS.md points other agents here). Update it when an item is done or found.
@@ -171,4 +197,4 @@ Stated gaps (in the README and on the site; not planned work):
 
 ## Next
 
-Release stabilization is complete and v0.3.1 is published. Report this session and wait for YK before the next session: setup-file synchronization, Linux layout failure recovery, macOS proxy behavior and accurate test reporting. Website verification follows.
+Unweb 0.4 (softdev-plan item 21) is in progress; see its section above.
