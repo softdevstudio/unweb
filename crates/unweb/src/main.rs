@@ -15,6 +15,7 @@ mod hsts;
 mod linux_layout;
 mod location;
 mod nav;
+mod relay;
 mod selftest;
 mod setups;
 mod strangers;
@@ -116,8 +117,22 @@ async fn forward(webview: tauri::Webview) -> Result<(), String> {
 
 #[tauri::command]
 async fn reload(webview: tauri::Webview) -> Result<(), String> {
+    // A stranger blocked by its proxy tries the typed address again, once
+    // the proxy answers; the others reload.
+    let strangers = strangers_of(&webview)?;
+    let win = window::window_of_bar(webview.label());
+    let app = webview.app_handle().clone();
     for p in pages_for(&webview)? {
-        p.reload().map_err(|e| e.to_string())?;
+        let stranger = window::stranger_of(p.label());
+        match (&stranger, &win) {
+            (Some(t), Some(w)) if strangers.blocked(t).is_some() => {
+                let url = strangers
+                    .typed(w)
+                    .unwrap_or_else(|| window::app_url("index.html"));
+                strangers.retry(&app, t, url);
+            }
+            _ => p.reload().map_err(|e| e.to_string())?,
+        }
     }
     Ok(())
 }
@@ -275,6 +290,24 @@ async fn save_compare(webview: tauri::Webview, image: String) -> Result<String, 
     compare::save(&c, &image).map(|p| p.display().to_string())
 }
 
+/// The compare window's Save report: a folder in Downloads with the strip,
+/// each stranger's screenshot, a report page and a JSON record. Says where.
+#[tauri::command]
+async fn save_report(
+    webview: tauri::Webview,
+    strip: String,
+    shots: Vec<String>,
+) -> Result<String, String> {
+    let win = compare::window_of_view(webview.label()).ok_or("not a compare window")?;
+    let c = webview
+        .app_handle()
+        .try_state::<Arc<compare::Compare>>()
+        .ok_or("not ready")?
+        .inner()
+        .clone();
+    compare::save_report(&c, &win, &strip, &shots).map(|p| p.display().to_string())
+}
+
 /// A strip's close button: closes its stranger (its whole window when it is
 /// the only one).
 #[tauri::command]
@@ -332,7 +365,8 @@ fn main() {
             open_setup,
             delete_setup,
             compare,
-            save_compare
+            save_compare,
+            save_report
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

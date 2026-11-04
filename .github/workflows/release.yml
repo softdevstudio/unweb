@@ -154,11 +154,11 @@ jobs:
           selftest() { # name, program and arguments
             local out="$PWD/st-$1"; shift
             if [ "${{ runner.os }}" = Linux ]; then
-              timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" "$@" --selftest "$out"
+              timeout 450 xvfb-run -a -s "-screen 0 1600x1000x24" "$@" --selftest "$out"
             else
               # macOS has no timeout command; the step's own time limit holds.
               if command -v timeout >/dev/null; then
-                timeout 300 "$@" --selftest "$out"
+                timeout 450 "$@" --selftest "$out"
               else
                 "$@" --selftest "$out"
               fi

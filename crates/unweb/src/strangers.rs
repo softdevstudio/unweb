@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Url};
@@ -108,6 +108,10 @@ pub struct Strangers {
     wipes: Mutex<Vec<Wipe>>,
     /// Wipes still running.
     pending: AtomicUsize,
+    /// The relay of each stranger that has one (see relay.rs).
+    relays: Mutex<HashMap<String, Arc<crate::relay::Relay>>>,
+    /// Blocked strangers whose proxy is being checked now.
+    checking: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Strangers {
@@ -134,6 +138,8 @@ impl Strangers {
             building: Mutex::new(()),
             wipes: Mutex::new(Vec::new()),
             pending: AtomicUsize::new(0),
+            relays: Mutex::new(HashMap::new()),
+            checking: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -281,8 +287,35 @@ impl Strangers {
         if let Ok(mut l) = self.settings.lock() {
             l.insert(label.clone(), settings.clone());
         }
-        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &settings)
-        {
+        // What the engine is given: the proxy itself, or the stranger's relay
+        // in its place (see relay.rs).
+        let engine = match &settings.location {
+            Some(l) if crate::location::needs_relay(l) => {
+                let block_app = app.clone();
+                let block_label = label.clone();
+                match crate::relay::Relay::start(
+                    l,
+                    Box::new(move |_| blocked_now(&block_app, &block_label)),
+                ) {
+                    Ok(r) => {
+                        let url = r.url();
+                        if let Ok(mut m) = self.relays.lock() {
+                            m.insert(label.clone(), Arc::new(r));
+                        }
+                        Settings {
+                            location: Some(url),
+                            ..settings.clone()
+                        }
+                    }
+                    Err(e) => {
+                        self.closed(&label);
+                        return Err(tauri::Error::Io(e));
+                    }
+                }
+            }
+            _ => settings.clone(),
+        };
+        if let Err(e) = crate::window::add_tile(app, &window, &label, folder.as_deref(), &engine) {
             for v in [
                 crate::window::strip_label(&label),
                 crate::window::page_label(&label),
@@ -307,6 +340,56 @@ impl Strangers {
         }
         crate::window::show_address(app, win);
         Ok(label)
+    }
+
+    /// Why stranger `label` is blocked (its proxy isn't answering or
+    /// refused the sign-in), if it is.
+    pub fn blocked(&self, label: &str) -> Option<&'static str> {
+        self.relays
+            .lock()
+            .ok()
+            .and_then(|m| m.get(label).cloned())
+            .and_then(|r| r.blocked())
+    }
+
+    /// The local port of stranger `label`'s relay, if it has one.
+    pub fn relay_port(&self, label: &str) -> Option<u16> {
+        self.relays
+            .lock()
+            .ok()
+            .and_then(|m| m.get(label).map(|r| r.port()))
+    }
+
+    /// A blocked stranger was asked to open `url`: checks its proxy (off
+    /// this thread) and opens the address only once the proxy answers.
+    pub fn retry(&self, app: &AppHandle, label: &str, url: Url) {
+        let Some(relay) = self.relays.lock().ok().and_then(|m| m.get(label).cloned()) else {
+            return;
+        };
+        if !self
+            .checking
+            .lock()
+            .map(|mut c| c.insert(label.to_string()))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let app = app.clone();
+        let label = label.to_string();
+        std::thread::spawn(move || {
+            let ok = relay.check().is_ok();
+            if let Some(s) = app.try_state::<Arc<Strangers>>() {
+                if let Ok(mut c) = s.checking.lock() {
+                    c.remove(&label);
+                }
+            }
+            if ok {
+                if let Some(page) = app.get_webview(&crate::window::page_label(&label)) {
+                    let _ = page.navigate(url);
+                }
+            }
+            crate::counter::refresh_one(&app, &label);
+        });
     }
 
     /// Remembers the address typed in window `win`'s bar.
@@ -609,6 +692,15 @@ impl Strangers {
     /// A stranger's window has closed: delete its data and check it's gone.
     /// Blocks until done, so call it off the main thread.
     pub fn closed(&self, label: &str) -> Wipe {
+        // A relay stops a little after its stranger: an engine still
+        // finishing would see a failed proxy, which macOS answers by going
+        // direct.
+        if let Some(r) = self.relays.lock().ok().and_then(|mut m| m.remove(label)) {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(5));
+                r.stop();
+            });
+        }
         self.pending.fetch_add(1, Ordering::SeqCst);
         let folder = self
             .live
@@ -919,6 +1011,18 @@ pub(crate) fn random_hex() -> String {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).expect("no system randomness");
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A stranger's relay found its proxy not answering, or refusing the
+/// sign-in: its page goes to about:blank (the connections it was making are
+/// held, unanswered, until then), and its strip says why.
+fn blocked_now(app: &AppHandle, label: &str) {
+    if let Some(page) = app.get_webview(&crate::window::page_label(label)) {
+        if let Ok(blank) = Url::parse("about:blank") {
+            let _ = page.navigate(blank);
+        }
+    }
+    crate::counter::refresh_one(app, label);
 }
 
 #[cfg(test)]

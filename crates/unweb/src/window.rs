@@ -301,9 +301,27 @@ pub fn add_tile(
     } else {
         page
     };
+    let nav_app = app.clone();
+    let nav_stranger = stranger.to_string();
     let page = page
         .disable_drag_drop_handler()
-        .on_navigation(page_may_open)
+        // A stranger whose proxy isn't answering opens no site; asking it to
+        // checks the proxy first (Strangers::retry).
+        .on_navigation(move |url| {
+            if !page_may_open(url) {
+                return false;
+            }
+            if matches!(url.scheme(), "http" | "https") {
+                if let Some(s) = nav_app.try_state::<std::sync::Arc<crate::strangers::Strangers>>()
+                {
+                    if s.blocked(&nav_stranger).is_some() {
+                        s.retry(&nav_app, &nav_stranger, url.clone());
+                        return false;
+                    }
+                }
+            }
+            true
+        })
         // A new window would need a store of its own; open it here instead,
         // so it stays with this stranger.
         .on_new_window(move |url, _| {

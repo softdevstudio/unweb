@@ -6,6 +6,8 @@
   var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
   var canvas = document.getElementById('strip');
   var save = document.getElementById('save');
+  var report = document.getElementById('report');
+  var shots = [];
   var status = document.getElementById('status');
   var title = document.getElementById('title');
 
@@ -30,6 +32,7 @@
   window.unwebCompare = function (data) {
     var panels = data.panels || [];
     title.textContent = (panels.length === 1 ? '1 stranger' : panels.length + ' strangers') + ', ' + (data.taken || '');
+    shots = panels.map(function (p) { return p.image; });
     Promise.all(panels.map(function (p) { return load(p.image); })).then(function (imgs) {
       var h = Math.min(MAX_H, Math.min.apply(null, imgs.map(function (i) { return i.naturalHeight; })));
       var widths = imgs.map(function (i) { return Math.max(1, Math.round(i.naturalWidth * h / i.naturalHeight)); });
@@ -56,6 +59,7 @@
         x += w + GAP;
       });
       save.disabled = false;
+      report.disabled = false;
       document.body.dataset.ready = 'yes';
     }, function (e) {
       status.textContent = String(e && e.message || e);
@@ -76,6 +80,23 @@
       status.textContent = String(e);
       status.className = 'error';
       save.disabled = false;
+    });
+  });
+
+  report.addEventListener('click', function () {
+    if (!invoke) return;
+    report.disabled = true;
+    status.className = '';
+    status.textContent = 'saving…';
+    // The captions come from the app's own record; only the images go.
+    invoke('save_report', { strip: canvas.toDataURL('image/png'), shots: shots }).then(function (path) {
+      status.textContent = 'Report saved to ' + path;
+      document.body.dataset.report = path;
+      report.disabled = false;
+    }, function (e) {
+      status.textContent = String(e);
+      status.className = 'error';
+      report.disabled = false;
     });
   });
 })();

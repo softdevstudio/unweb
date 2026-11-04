@@ -142,7 +142,9 @@ impl Setups {
                 .take(crate::window::MAX_TILES)
                 .map(|s| SetupStranger {
                     language: s.lang.clone(),
-                    location: crate::location::show(s.location.as_ref()),
+                    // With its user name and password, if it has them: a
+                    // setup opens its proxies without asking again.
+                    location: crate::location::full(s.location.as_ref()),
                 })
                 .collect(),
         };
@@ -225,8 +227,8 @@ impl Setups {
                             // A location that doesn't pass is kept as it is, so
                             // opening the setup can refuse it rather than go direct.
                             location: match crate::location::parse_location(&t.location) {
-                                Ok(l) => crate::location::show(l.as_ref()),
-                                Err(_) => t.location.trim().chars().take(300).collect(),
+                                Ok(l) => crate::location::full(l.as_ref()),
+                                Err(_) => t.location.trim().chars().take(1600).collect(),
                             },
                         })
                         .collect();
@@ -276,7 +278,15 @@ impl Setups {
         ));
         let written = (|| {
             use std::io::Write;
-            let mut f = std::fs::File::create(&tmp)?;
+            // Only this user may read it: it can hold proxy passwords.
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                o.mode(0o600);
+            }
+            let mut f = o.open(&tmp)?;
             f.write_all(&json)?;
             f.sync_all()?;
             std::fs::rename(&tmp, &self.path)
@@ -412,11 +422,12 @@ mod tests {
             .collect();
         assert_eq!(aside.len(), 1);
         // Hand-edited entries that don't pass are cleaned up on reading:
-        // a made-up language, a proxy with a password, a bad name.
+        // a made-up language, a proxy with a user name and no password, a
+        // bad name.
         std::fs::write(
             &path,
             r#"{"format":"unweb-setups","format_version":1,"setups":[
-              {"name":"ok","strangers":[{"language":"xx-YY --x","location":"http://u:p@h:1"},{"language":"de-DE","location":"h:8080"},{},{},{},{}]},
+              {"name":"ok","strangers":[{"language":"xx-YY --x","location":"http://u@h:1"},{"language":"de-DE","location":"h:8080"},{},{},{},{}]},
               {"name":"bad\u0007","strangers":[{}]},
               {"name":"empty","strangers":[]}]}"#,
         )
@@ -424,14 +435,35 @@ mod tests {
         let list = setups.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].strangers.len(), crate::window::MAX_TILES);
-        // The made-up language is dropped; the proxy with a password stays
+        // The made-up language is dropped; the proxy without its password stays
         // as written, and opening the setup is refused rather than going
         // direct.
         assert_eq!(list[0].strangers[0].language, "");
-        assert_eq!(list[0].strangers[0].location, "http://u:p@h:1");
+        assert_eq!(list[0].strangers[0].location, "http://u@h:1");
         assert_eq!(list[0].strangers[1].location, "http://h:8080");
         let refused = setups.get("ok").unwrap_err();
         assert!(refused.contains("Stranger 1"), "{refused}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_proxy_password_is_kept_in_a_file_only_this_user_reads() {
+        let path = temp();
+        let setups = Setups::new(path.clone());
+        let loc = crate::location::parse_location("socks5://ann:s%20cret@p.example:1080").unwrap();
+        let s = vec![crate::strangers::Settings {
+            lang: String::new(),
+            location: loc.clone(),
+        }];
+        setups.save("paid", &s).unwrap();
+        let got = setups.get("paid").unwrap();
+        assert_eq!(got[0].location, loc);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

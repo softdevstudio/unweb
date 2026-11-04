@@ -18,6 +18,7 @@ fn main() {
             "delete_setup",
             "compare",
             "save_compare",
+            "save_report",
         ]),
     ))
     .expect("tauri build step failed");

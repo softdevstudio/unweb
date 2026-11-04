@@ -42,14 +42,23 @@
     // "18 cookies from example.com, 3 from 2 other sites", with the count
     // for this site in bold.
     cookies.textContent = '';
-    var text = String(s.cookies || '');
+    cookies.classList.toggle('blocked', !!s.blocked);
+    if (s.blocked) {
+      cookies.textContent = String(s.blocked);
+      cookies.title = 'Reload tries again once the proxy answers';
+    } else {
+      cookies.title = '';
+    }
+    var text = s.blocked ? '' : String(s.cookies || '');
     var m = /^(\d+ cookies?)(.*)$/.exec(text);
-    if (m) {
+    if (s.blocked) {
+      // Shown above.
+    } else if (m) {
       var b = document.createElement('b');
       b.textContent = m[1];
       cookies.appendChild(b);
       cookies.appendChild(document.createTextNode(m[2]));
-    } else {
+    } else if (text) {
       cookies.textContent = text;
     }
     close.hidden = !(s.tiles > 1) || editing;

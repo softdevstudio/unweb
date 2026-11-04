@@ -6,7 +6,11 @@
 //! addresses included, and when the proxy can't be reached the stranger
 //! loads nothing rather than going direct. WebRTC is turned off in a
 //! stranger with a location, since it can reach the network around a proxy.
-//! Proxies that need a user name and password aren't supported yet.
+//!
+//! A location may carry a user name and password (`user:pass@host:port`).
+//! No engine takes SOCKS5 credentials, so such a stranger, and every
+//! stranger with a location on macOS, is given Unweb's own relay instead,
+//! which signs in to the proxy (see relay.rs).
 
 use tauri::Url;
 
@@ -17,7 +21,7 @@ pub fn parse_location(text: &str) -> Result<Option<Url>, String> {
     if text.is_empty() || text.eq_ignore_ascii_case("direct") {
         return Ok(None);
     }
-    if text.len() > 300 || text.contains(char::is_whitespace) {
+    if text.len() > 1600 || text.contains(char::is_whitespace) {
         return Err(HELP.into());
     }
     let (scheme, rest) = match text.split_once("://") {
@@ -30,9 +34,17 @@ pub fn parse_location(text: &str) -> Result<Option<Url>, String> {
     // Parsed as an http address whatever the scheme, so the host gets the
     // full check (socks5 is a scheme the parser keeps hosts raw for).
     let url = Url::parse(&format!("http://{rest}")).map_err(|_| HELP.to_string())?;
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("Proxies with a user name and password aren't supported yet".into());
-    }
+    let creds = match (url.username(), url.password()) {
+        ("", None) => None,
+        (user, Some(pass)) if !user.is_empty() && !pass.is_empty() => {
+            let (user, pass) = (decode(user)?, decode(pass)?);
+            if scheme == "http" && user.contains(':') {
+                return Err("An HTTP proxy's user name can't hold a colon".into());
+            }
+            Some((user, pass))
+        }
+        _ => return Err("Give both the user name and the password, like socks5://user:password@proxy.example:1080".into()),
+    };
     match url.host() {
         // A host name as DNS knows them (letters, digits, dots, hyphens,
         // after the parser turned any other script into its xn-- form).
@@ -61,14 +73,55 @@ pub fn parse_location(text: &str) -> Result<Option<Url>, String> {
         return Err(HELP.into());
     }
     let host = url.host_str().unwrap_or_default();
-    Url::parse(&format!("{scheme}://{host}:{port}"))
-        .map(Some)
-        .map_err(|_| HELP.to_string())
+    let mut out = Url::parse(&format!("{scheme}://{host}:{port}")).map_err(|_| HELP.to_string())?;
+    if let Some((user, pass)) = creds {
+        // Written back in one encoding of Unweb's own, so the same
+        // credentials always give the same location.
+        out.set_username(&encode(&user))
+            .map_err(|_| HELP.to_string())?;
+        out.set_password(Some(&encode(&pass)))
+            .map_err(|_| HELP.to_string())?;
+    }
+    Ok(Some(out))
+}
+
+/// Characters a user name or password keeps as they are in a location.
+const KEEP: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn encode(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, KEEP).to_string()
+}
+
+/// A user name or password as typed (percent-decoded): 1 to 255 bytes, as
+/// SOCKS5 sign-in carries, and no control characters.
+fn decode(s: &str) -> Result<String, String> {
+    let d = percent_encoding::percent_decode_str(s)
+        .decode_utf8()
+        .map_err(|_| "A user name or password must be UTF-8 text".to_string())?
+        .into_owned();
+    if d.is_empty() || d.len() > 255 {
+        return Err("A user name and a password are 1 to 255 bytes each".into());
+    }
+    if d.chars().any(char::is_control) {
+        return Err("A user name or password can't hold control characters".into());
+    }
+    Ok(d)
+}
+
+/// The user name and password of a location that has them (decoded).
+pub fn credentials(location: &Url) -> Option<(String, String)> {
+    let pass = location.password()?;
+    Some((decode(location.username()).ok()?, decode(pass).ok()?))
 }
 
 const HELP: &str = "Type a proxy address, like socks5://proxy.example:1080 or proxy.example:8080";
 
-/// How a location is written in a strip and a saved setup.
+/// A location as captions and reports show it: scheme, host and port,
+/// never the user name or password.
 pub fn show(location: Option<&Url>) -> String {
     match location {
         None => String::new(),
@@ -79,6 +132,45 @@ pub fn show(location: Option<&Url>) -> String {
             u.port().unwrap_or_default()
         ),
     }
+}
+
+/// A location as its strip shows it: with the user name, never the
+/// password.
+pub fn show_user(location: Option<&Url>) -> String {
+    match location {
+        Some(u) if !u.username().is_empty() => {
+            let s = show(location);
+            let (scheme, rest) = s.split_once("://").unwrap_or(("", &s));
+            format!("{scheme}://{}@{rest}", u.username())
+        }
+        _ => show(location),
+    }
+}
+
+/// A location in full, user name and password included, as a saved setup
+/// keeps it.
+pub fn full(location: Option<&Url>) -> String {
+    match location {
+        Some(u) if u.password().is_some() => {
+            let s = show(location);
+            let (scheme, rest) = s.split_once("://").unwrap_or(("", &s));
+            format!(
+                "{scheme}://{}:{}@{rest}",
+                u.username(),
+                u.password().unwrap_or_default()
+            )
+        }
+        _ => show(location),
+    }
+}
+
+/// Whether a stranger with this location is given Unweb's relay rather
+/// than the proxy itself: on macOS always (its network layer goes direct
+/// when a proxy fails, and the relay never fails), elsewhere when the
+/// proxy needs a user name and password, which no engine here takes for
+/// SOCKS5.
+pub fn needs_relay(location: &Url) -> bool {
+    cfg!(target_os = "macos") || location.password().is_some()
 }
 
 /// Whether this system can give a stranger a location, and why not.
@@ -166,8 +258,11 @@ mod tests {
             "https://proxy.example:443",
             "socks4://p:1080",
             "ftp://p:21",
-            "http://user:pass@p:8080",
             "http://user@p:8080",
+            "http://:pass@p:8080",
+            "http://a%3Ab:pass@p:8080",
+            "socks5://u:%00@p:1080",
+            "socks5://u:%FF@p:1080",
             "http://[::1]:8080",
             "http://p:8080/path",
             "http://p:8080/?x=1",
@@ -181,6 +276,40 @@ mod tests {
         ] {
             assert!(parse_location(bad).is_err(), "{bad} was taken");
         }
+    }
+
+    #[test]
+    fn credentials_are_kept_but_never_shown() {
+        let l = parse_location("socks5://Ann:p%40ss%20w0rd!@Proxy.Example:1080")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            credentials(&l),
+            Some(("Ann".to_string(), "p@ss w0rd!".to_string()))
+        );
+        assert_eq!(show(Some(&l)), "socks5://proxy.example:1080");
+        assert_eq!(show_user(Some(&l)), "socks5://Ann@proxy.example:1080");
+        let f = full(Some(&l));
+        assert!(!f.contains(' ') && f.contains("p%40ss%20w0rd%21"), "{f}");
+        // The full form reads back as the same location.
+        assert_eq!(parse_location(&f).unwrap().unwrap(), l);
+        // Same credentials, other spelling: the same location.
+        assert_eq!(
+            parse_location("socks5://Ann:p%40ss%20w0rd%21@proxy.example:1080")
+                .unwrap()
+                .unwrap(),
+            l
+        );
+        let h = parse_location("http://u-1:b%3Ac@p:8080").unwrap().unwrap();
+        assert_eq!(credentials(&h).unwrap().1, "b:c");
+        assert!(needs_relay(&h));
+        let plain = parse_location("p:8080").unwrap().unwrap();
+        assert_eq!(credentials(&plain), None);
+        assert_eq!(needs_relay(&plain), cfg!(target_os = "macos"));
+        assert_eq!(full(Some(&plain)), "http://p:8080");
+        let long = "x".repeat(256);
+        assert!(parse_location(&format!("socks5://{long}:p@h:1")).is_err());
+        assert!(parse_location(&format!("socks5://u:{}@h:1", "y".repeat(255))).is_ok());
     }
 
     #[test]

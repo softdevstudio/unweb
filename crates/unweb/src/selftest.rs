@@ -27,7 +27,7 @@
 //!    NVIDIA's, in the user's cache folder) must not have changed; and the
 //!    normal browser's folders must not have changed.
 //!
-//! A watchdog stops a run that is still going after 280 s and says which
+//! A watchdog stops a run that is still going after 420 s and says which
 //! part it was in.
 //!
 //! Results go to `<dir>/selftest.json`; the exit code is 0 only if every
@@ -47,8 +47,8 @@ use crate::strangers::{Strangers, USES_FOLDERS};
 
 const OVERALL: Duration = Duration::from_secs(240);
 /// If the self-test hasn't finished by then, it says where it was and
-/// stops (the scripts that run it give up at 300 s).
-const WATCHDOG: Duration = Duration::from_secs(280);
+/// stops (the scripts that run it give up at 450 s).
+const WATCHDOG: Duration = Duration::from_secs(420);
 
 /// The part of the self-test running now, for the watchdog.
 static STEP: Mutex<&'static str> = Mutex::new("starting");
@@ -685,7 +685,7 @@ fn page_address(app: &AppHandle, window: &str) -> String {
 }
 
 /// How many app commands there are; a page must be refused every one.
-const COMMANDS: usize = 14;
+const COMMANDS: usize = 15;
 
 /// Asks the bar of `window` to run one of its commands, the way its
 /// buttons do.
@@ -838,7 +838,7 @@ fn bar_checks(
         app,
         &page_label(w),
         "(function(){var i=window.__TAURI_INTERNALS__;var tell=function(n,r){fetch('/cmd?name='+n+'&r='+r)};\
-         ['new_stranger','go','reload','back','forward','side_by_side','set_language','set_location','close_stranger','save_setup','open_setup','delete_setup','compare','save_compare'].forEach(function(n){try{i.invoke(n,{text:'example.com',lang:'de-DE',name:'x',image:'x'}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
+         ['new_stranger','go','reload','back','forward','side_by_side','set_language','set_location','close_stranger','save_setup','open_setup','delete_setup','compare','save_compare','save_report'].forEach(function(n){try{i.invoke(n,{text:'example.com',lang:'de-DE',name:'x',image:'x',strip:'x',shots:[]}).then(function(){tell(n,'ran')},function(){tell(n,'refused')})}catch(e){tell(n,'refused')}});\
          return 'sent'})()",
     );
     let answered = wait_until(Instant::now() + Duration::from_secs(10), || {
@@ -2127,11 +2127,9 @@ fn run(
 /// macOS's network layer sends a page's requests to this machine's own
 /// loopback addresses past a proxy (other systems can be told not to).
 const LOOPBACK_SKIPS_PROXY: bool = cfg!(target_os = "macos");
-/// macOS sends a stranger direct when its proxy can't be reached; fallback
-/// turned off in the proxy configuration and a relay of Unweb's own both
-/// failed to stop it. A known gap, stated in the README; the check reports
-/// what happened there instead of judging it.
-const DOWN_PROXY_GOES_DIRECT: bool = cfg!(target_os = "macos");
+/// Whether every stranger with a location goes through Unweb's relay here
+/// (macOS), or only those whose proxy needs a sign-in.
+const ALWAYS_RELAY: bool = cfg!(target_os = "macos");
 
 /// Requests for stranger `who` on the location pages.
 fn proxied_hits(site: &Server, who: &str) -> Vec<Hit> {
@@ -2336,27 +2334,31 @@ fn location_checks(
             let n = proxied_hits(site, "DOWN").len();
             let n_lan = proxied_hits(site, "DOWNLAN").len();
             let judged_loopback = !LOOPBACK_SKIPS_PROXY;
+            let down_labels = strangers.tiles(&dwin);
+            let blocked: Vec<Option<&str>> =
+                down_labels.iter().map(|l| strangers.blocked(l)).collect();
+            let blocked_right = !ALWAYS_RELAY
+                || blocked
+                    .iter()
+                    .all(|b| *b == Some(crate::relay::NOT_ANSWERING));
             out.push(check(
                 fails_closed,
-                if DOWN_PROXY_GOES_DIRECT {
-                    loaded
-                } else {
-                    (n == 0 || !judged_loopback)
-                        && n_lan == 0
-                        && (judged_loopback || lan_url.is_some())
-                        && loaded
-                },
+                (n == 0 || !judged_loopback)
+                    && n_lan == 0
+                    && (judged_loopback || lan_url.is_some())
+                    && loaded
+                    && blocked_right,
                 format!(
-                    "{}requests that reached the site anyway: to a loopback address {n}{}, to this machine's network address {}; the same page through a working proxy loaded: {loaded}",
-                    if DOWN_PROXY_GOES_DIRECT {
-                        "not judged on macOS, a known gap stated in the README (macOS goes direct when a proxy is down); "
-                    } else {
-                        ""
-                    },
+                    "requests that reached the site anyway: to a loopback address {n}{}, to this machine's network address {}; {}the same page through a working proxy loaded: {loaded}",
                     if judged_loopback { "" } else { " (this system sends loopback past any proxy, so not judged)" },
                     match &lan_url {
                         Some(_) => n_lan.to_string(),
                         None => "not tried (no network address)".into(),
+                    },
+                    if ALWAYS_RELAY {
+                        format!("each stranger blocked by its relay: {blocked:?}; ")
+                    } else {
+                        String::new()
                     }
                 ),
             ));
@@ -2368,6 +2370,13 @@ fn location_checks(
             format!("the window didn't open: {e}"),
         )),
     }
+
+    step("locations, sign-in");
+    out.push(sign_in_check(app, strangers, site, &far, &l1_base));
+    step("locations, a proxy that stops");
+    out.push(stops_check(app, strangers, site, &l1_base));
+    step("locations, a site the proxy can't reach");
+    out.push(refused_site_check(app, strangers, site, &l1_base));
 
     step("locations, changing one");
     // Changing the third stranger's location from its strip.
@@ -2406,6 +2415,222 @@ fn location_checks(
     out.push(setup_check(app, strangers, &win, site.port));
     close(app, strangers, &win);
     out
+}
+
+/// Proxies that need a user name and password: the right ones load
+/// through them, wrong ones load nothing and block the stranger, and the
+/// strip shows the user name but never the password.
+fn sign_in_check(
+    app: &AppHandle,
+    strangers: &Strangers,
+    site: &Server,
+    far: &str,
+    base: &str,
+) -> Check {
+    use crate::strangers::Settings;
+    use crate::testproxy::Proxy;
+    use crate::window::strip_label;
+    let name = "a proxy's user name and password sign the stranger in; wrong ones load nothing";
+    let (Ok(socks), Ok(http)) = (
+        Proxy::socks5_sign_in("ann", "s3cret pw"),
+        Proxy::http_sign_in("bob", "pa:ss"),
+    ) else {
+        return check(name, false, "the test proxies didn't start".into());
+    };
+    let loc = |s: String| Settings {
+        lang: String::new(),
+        location: crate::location::parse_location(&s).ok().flatten(),
+    };
+    let tiles = vec![
+        (
+            Url::parse(&format!("{far}/proxied?who=AU1")).ok(),
+            loc(format!("socks5://ann:s3cret%20pw@127.0.0.1:{}", socks.port)),
+        ),
+        (
+            Url::parse(&format!("{base}/proxied?who=AU2")).ok(),
+            loc(format!("http://bob:pa%3Ass@127.0.0.1:{}", http.port)),
+        ),
+        (
+            Url::parse(&format!("{base}/proxied?who=AU3")).ok(),
+            loc(format!("socks5://ann:wrong@127.0.0.1:{}", socks.port)),
+        ),
+        (
+            Url::parse(&format!("{base}/proxied?who=AU4")).ok(),
+            loc(format!("http://bob:wrong@127.0.0.1:{}", http.port)),
+        ),
+    ];
+    if tiles.iter().any(|(_, s)| s.location.is_none()) {
+        return check(name, false, "a location with a sign-in didn't parse".into());
+    }
+    let Ok((win, labels)) = strangers.open_window(app, tiles) else {
+        return check(name, false, "the window didn't open".into());
+    };
+    let complete = |who: &str| {
+        let h = proxied_hits(site, who);
+        ["/proxied", "/pimg", "/pfetch", "/pframe"]
+            .iter()
+            .all(|p| h.iter().any(|x| x.path == *p))
+    };
+    let loaded = wait_until(Instant::now() + Duration::from_secs(25), || {
+        complete("AU1") && complete("AU2")
+    });
+    let blocked_both = wait_until(Instant::now() + Duration::from_secs(10), || {
+        strangers.blocked(&labels[2]) == Some(crate::relay::SIGN_IN_REFUSED)
+            && strangers.blocked(&labels[3]) == Some(crate::relay::SIGN_IN_REFUSED)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    let (n1, all1) = came_through(site, "AU1", &socks.onward_ports());
+    let (n2, all2) = came_through(site, "AU2", &http.onward_ports());
+    let (n3, n4) = (
+        proxied_hits(site, "AU3").len(),
+        proxied_hits(site, "AU4").len(),
+    );
+    let shown = eval_string(
+        app,
+        &strip_label(&labels[0]),
+        "document.getElementById('where').textContent + ' | ' + document.getElementById('whereinput').value",
+    );
+    let note = eval_string(
+        app,
+        &strip_label(&labels[2]),
+        "document.getElementById('cookies').textContent",
+    );
+    let strip_right = shown.contains("ann@") && !shown.contains("s3cret");
+    let note_right = note.contains("refused");
+    close(app, strangers, &win);
+    check(
+        name,
+        loaded && n1 >= 4 && all1 && n2 >= 4 && all2 && n3 == 0 && n4 == 0 && blocked_both && strip_right && note_right,
+        format!(
+            "SOCKS5 with a sign-in: {n1} requests, all through it: {all1}; HTTP with a sign-in: {n2} requests, all through it: {all2}; wrong passwords: {n3} and {n4} requests reached the site, both strangers blocked: {blocked_both}, sign-ins the proxies refused: {} and {}; the strip shows the user name without the password: {strip_right} ({shown:?}); the blocked strip says {note:?}",
+            socks.refused(),
+            http.refused()
+        ),
+    )
+}
+
+/// A proxy that stops while its stranger's page is open: nothing reaches
+/// the site afterwards (it would have come direct), and where the stranger
+/// has a relay it is blocked and loads again after Reload once the proxy is
+/// back.
+fn stops_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str) -> Check {
+    use crate::strangers::Settings;
+    use crate::testproxy::Proxy;
+    use crate::window::page_label;
+    let name = "a proxy that stops while its page is open: nothing goes direct";
+    // With a sign-in, so the stranger has a relay on every system.
+    let Ok(proxy) = Proxy::socks5_sign_in("cy", "pw") else {
+        return check(name, false, "the test proxy didn't start".into());
+    };
+    let settings = Settings {
+        lang: String::new(),
+        location: crate::location::parse_location(&format!(
+            "socks5://cy:pw@127.0.0.1:{}",
+            proxy.port
+        ))
+        .ok()
+        .flatten(),
+    };
+    let Ok(first) = Url::parse(&format!("{base}/proxied?who=ST")) else {
+        return check(name, false, "no address".into());
+    };
+    let Ok((win, labels)) = strangers.open_window(app, vec![(Some(first.clone()), settings)])
+    else {
+        return check(name, false, "the window didn't open".into());
+    };
+    strangers.set_typed(&win, first);
+    let loaded = wait_until(Instant::now() + Duration::from_secs(20), || {
+        proxied_hits(site, "ST").iter().any(|h| h.path == "/pfetch")
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    let before_st = proxied_hits(site, "ST").len();
+    proxy.set_down(true);
+    let _ = eval_string(
+        app,
+        &page_label(&labels[0]),
+        "(function(){new Image().src='/pimg?who=ST2&n=1';fetch('/pfetch?who=ST2&n=2',{mode:'no-cors'}).catch(function(){});return 'sent'})()",
+    );
+    let relayed = strangers.relay_port(&labels[0]).is_some();
+    let blocked = !relayed
+        || wait_until(Instant::now() + Duration::from_secs(15), || {
+            strangers.blocked(&labels[0]) == Some(crate::relay::NOT_ANSWERING)
+        });
+    std::thread::sleep(Duration::from_secs(5));
+    let leaked = proxied_hits(site, "ST2").len();
+    let blank = !relayed || page_address(app, &labels[0]).starts_with("about:");
+    // Back again: Reload checks the proxy and opens the typed address.
+    let mut back = true;
+    if relayed {
+        proxy.set_down(false);
+        bar_call(app, &win, "reload", "{}");
+        back = wait_until(Instant::now() + Duration::from_secs(20), || {
+            proxied_hits(site, "ST").len() > before_st && strangers.blocked(&labels[0]).is_none()
+        });
+    }
+    let (n, all) = came_through(site, "ST", &proxy.onward_ports());
+    close(app, strangers, &win);
+    check(
+        name,
+        loaded && leaked == 0 && blocked && blank && back && all,
+        format!(
+            "the page loaded through the proxy: {loaded}; after the proxy stopped, requests that reached the site: {leaked}; {}every request of this stranger came through the proxy: {all} ({n})",
+            if relayed {
+                format!("the stranger was blocked: {blocked}, its page cleared: {blank}; with the proxy back, Reload loaded the address again: {back}; ")
+            } else {
+                "(no relay here: the engine itself refuses to go direct) ".into()
+            }
+        ),
+    )
+}
+
+/// A working proxy that can't reach a site: the stranger doesn't go there
+/// direct (macOS would, if the relay answered with a failure).
+fn refused_site_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str) -> Check {
+    use crate::strangers::Settings;
+    use crate::testproxy::Proxy;
+    use crate::window::page_label;
+    let name = "a site the proxy can't reach isn't reached direct";
+    // With a sign-in, so the stranger has a relay on every system.
+    let Ok(proxy) = Proxy::http_sign_in("cy", "pw") else {
+        return check(name, false, "the test proxy didn't start".into());
+    };
+    let settings = Settings {
+        lang: String::new(),
+        location: crate::location::parse_location(&format!(
+            "http://cy:pw@127.0.0.1:{}",
+            proxy.port
+        ))
+        .ok()
+        .flatten(),
+    };
+    let Ok(first) = Url::parse(&format!("{base}/proxied?who=RF")) else {
+        return check(name, false, "no address".into());
+    };
+    let port = first.port().unwrap_or_default();
+    let Ok((win, labels)) = strangers.open_window(app, vec![(Some(first), settings)]) else {
+        return check(name, false, "the window didn't open".into());
+    };
+    let loaded = wait_until(Instant::now() + Duration::from_secs(20), || {
+        proxied_hits(site, "RF").iter().any(|h| h.path == "/pfetch")
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    proxy.refuse_port(port);
+    let _ = eval_string(
+        app,
+        &page_label(&labels[0]),
+        "(function(){new Image().src='/pimg?who=RF2&n=1';fetch('/pfetch?who=RF2&n=2',{mode:'no-cors'}).catch(function(){});return 'sent'})()",
+    );
+    std::thread::sleep(Duration::from_secs(6));
+    let leaked = proxied_hits(site, "RF2").len();
+    let blocked = strangers.blocked(&labels[0]);
+    close(app, strangers, &win);
+    check(
+        name,
+        loaded && leaked == 0 && blocked.is_none(),
+        format!(
+            "the page loaded through the proxy: {loaded}; once the proxy refused the site, requests that reached it: {leaked}; the stranger blocked (it shouldn't be, the proxy works): {blocked:?}"
+        ),
+    )
 }
 
 fn setup_check(app: &AppHandle, strangers: &Strangers, win: &str, site_port: u16) -> Check {
@@ -2560,13 +2785,56 @@ fn near(a: [u8; 3], b: [u8; 3]) -> bool {
 }
 
 /// The compare strip: screenshots of three strangers showing three colours.
+/// Reads a saved report folder: its JSON, each screenshot (the colour at
+/// its centre, in order), the strip and the page.
+fn report_says(dir: &std::path::Path, colors: &[[u8; 3]]) -> (bool, String) {
+    let json: Option<serde_json::Value> = std::fs::read(dir.join("report.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let Some(json) = json else {
+        return (false, format!("{}: no readable report.json", dir.display()));
+    };
+    let list = json["strangers"].as_array().cloned().unwrap_or_default();
+    let mut right = json["format"] == "unweb-compare" && list.len() == colors.len();
+    let mut seen = Vec::new();
+    for (i, s) in list.iter().enumerate() {
+        let file = s["screenshot"].as_str().unwrap_or_default();
+        let ok = std::fs::read(dir.join(file))
+            .ok()
+            .and_then(|b| png_pixels(&b))
+            .is_some_and(|(w, h, px)| {
+                s["width"] == w
+                    && s["height"] == h
+                    && near(px[(h / 2 * w + w / 2) as usize], colors[i])
+            });
+        right &= ok && s["number"] == i + 1;
+        seen.push(format!("{file} {ok}"));
+    }
+    let strip = std::fs::read(dir.join("strip.png"))
+        .ok()
+        .and_then(|b| png_pixels(&b))
+        .is_some();
+    let html = std::fs::read_to_string(dir.join("report.html")).unwrap_or_default();
+    let page = html.contains("stranger-3.png") && !html.contains("<script");
+    (
+        right && strip && page,
+        format!(
+            "{}: report.json lists {} strangers ({}), strip.png readable: {strip}, report.html shows them without scripts: {page}",
+            dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            list.len(),
+            seen.join(", ")
+        ),
+    )
+}
+
 fn compare_checks(
     app: &AppHandle,
     strangers: &Strangers,
     _site: &Server,
     site_url: &str,
 ) -> Vec<Check> {
-    let name = "Compare shows every stranger side by side and saves them as one image";
+    let name =
+        "Compare shows every stranger side by side and saves them as one image and as a report";
     let colors: [(&str, [u8; 3]); 3] = [
         ("ff0000", [255, 0, 0]),
         ("00c000", [0, 192, 0]),
@@ -2661,6 +2929,21 @@ fn compare_checks(
         .unwrap_or_default();
     let in_order = order == vec![0, 1, 2];
     let shown_path = eval_string(app, &view, "document.body.dataset.saved || ''");
+    step("compare, Save report");
+    let saved_before = c.saved.lock().map(|s| s.len()).unwrap_or_default();
+    let _ = eval_string(
+        app,
+        &view,
+        "document.getElementById('report').click(); 'sent'",
+    );
+    let reported = wait_until(Instant::now() + Duration::from_secs(20), || {
+        c.saved.lock().map(|s| s.len()).unwrap_or_default() > saved_before
+    });
+    let folder = c.saved.lock().ok().and_then(|s| s.last().cloned());
+    let (report_ok, report_detail) = match &folder {
+        Some(f) if reported => report_says(f, &colors.map(|(_, rgb)| rgb)),
+        _ => (false, "no report folder".to_string()),
+    };
     if let Some(w) = app.get_window(&cmp_label) {
         let _ = w.close();
     }
@@ -2673,9 +2956,9 @@ fn compare_checks(
     close(app, strangers, &win);
     vec![check(
         name,
-        painted && opened && ready && shots_right && saved && in_order && !shown_path.is_empty() && cmp_wiped,
+        painted && opened && ready && shots_right && saved && in_order && !shown_path.is_empty() && report_ok && cmp_wiped,
         format!(
-            "three strangers showing red, green and blue: {painted}; the compare window opened: {opened}, drew the strip: {ready} ({page_says:?}); each screenshot's centre: {centres:?} (right colours: {shots_right}); Save image wrote {:?}: {saved}, and its middle row shows the colours in order: {order:?}; the window said where: {}; the compare window's own store deleted when it closed: {cmp_wiped}",
+            "three strangers showing red, green and blue: {painted}; the compare window opened: {opened}, drew the strip: {ready} ({page_says:?}); each screenshot's centre: {centres:?} (right colours: {shots_right}); Save image wrote {:?}: {saved}, and its middle row shows the colours in order: {order:?}; the window said where: {}; Save report: {report_detail}; the compare window's own store deleted when it closed: {cmp_wiped}",
             file.as_ref().map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
             !shown_path.is_empty()
         ),

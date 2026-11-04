@@ -80,8 +80,9 @@ fn refresh(app: &AppHandle, strangers: &Strangers, stranger: &str) {
         "langPerStranger": LANGUAGE_PER_STRANGER,
         "noLangReason": NO_LANGUAGE_REASON,
         "tiles": tiles,
-        "location": crate::location::show(settings.location.as_ref()),
+        "location": crate::location::show_user(settings.location.as_ref()),
         "locationNote": crate::location::supported().err().unwrap_or(""),
+        "blocked": strangers.blocked(stranger),
     });
     let _ = strip.eval(format!("window.unwebStrip && window.unwebStrip({state})"));
 }

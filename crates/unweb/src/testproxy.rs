@@ -1,5 +1,7 @@
 //! The self-test's own proxies, for the location checks: an HTTP proxy
-//! (absolute-form requests and CONNECT) and a SOCKS5 proxy (no sign-in).
+//! (absolute-form requests and CONNECT) and a SOCKS5 proxy, each with or
+//! without a sign-in (Basic Proxy-Authorization; SOCKS5 user name and
+//! password), and each able to play dead.
 //!
 //! Both log every connection they make onward: where to, how it was asked
 //! for, and the local port of the onward connection. The test site logs the
@@ -10,6 +12,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,35 +31,103 @@ pub struct Onward {
 pub struct Proxy {
     pub port: u16,
     pub onward: Arc<Mutex<Vec<Onward>>>,
+    /// Sign-ins refused (wrong or missing credentials).
+    pub refused: Arc<Mutex<usize>>,
+    down: Arc<AtomicBool>,
+    /// A destination port this proxy won't connect to (0 for none), as a
+    /// proxy that can't reach a site would answer.
+    refuse_port: Arc<std::sync::atomic::AtomicU16>,
+    /// Every client connection still open, so they can be cut.
+    open: Arc<Mutex<Vec<TcpStream>>>,
 }
+
+type Creds = Option<(String, String)>;
 
 impl Proxy {
     pub fn http() -> std::io::Result<Proxy> {
-        Proxy::start(false)
+        Proxy::start(false, None)
     }
 
     pub fn socks5() -> std::io::Result<Proxy> {
-        Proxy::start(true)
+        Proxy::start(true, None)
     }
 
-    fn start(socks: bool) -> std::io::Result<Proxy> {
+    pub fn http_sign_in(user: &str, pass: &str) -> std::io::Result<Proxy> {
+        Proxy::start(false, Some((user.into(), pass.into())))
+    }
+
+    pub fn socks5_sign_in(user: &str, pass: &str) -> std::io::Result<Proxy> {
+        Proxy::start(true, Some((user.into(), pass.into())))
+    }
+
+    fn start(socks: bool, creds: Creds) -> std::io::Result<Proxy> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let onward = Arc::new(Mutex::new(Vec::new()));
-        let log = onward.clone();
+        let refused = Arc::new(Mutex::new(0usize));
+        let down = Arc::new(AtomicBool::new(false));
+        let refuse_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let open = Arc::new(Mutex::new(Vec::new()));
+        let (log, no, dead) = (onward.clone(), refused.clone(), down.clone());
+        let (refuse, conns) = (refuse_port.clone(), open.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let log = log.clone();
+                // Playing dead: the connection is taken and closed at once.
+                if dead.load(Ordering::SeqCst) {
+                    drop(stream);
+                    continue;
+                }
+                if let (Ok(c), Ok(mut o)) = (stream.try_clone(), conns.lock()) {
+                    o.push(c);
+                }
+                let (log, no, creds, refuse) =
+                    (log.clone(), no.clone(), creds.clone(), refuse.clone());
                 std::thread::spawn(move || {
+                    let refused = refuse.load(Ordering::SeqCst);
                     let _ = if socks {
-                        socks5(stream, &log)
+                        socks5(stream, &log, &no, &creds, refused)
                     } else {
-                        http(stream, &log)
+                        http(stream, &log, &no, &creds, refused)
                     };
                 });
             }
         });
-        Ok(Proxy { port, onward })
+        Ok(Proxy {
+            port,
+            onward,
+            refused,
+            down,
+            refuse_port,
+            open,
+        })
+    }
+
+    /// Plays dead (every new connection closed at once, and those open now
+    /// cut), or stops playing.
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+        if down {
+            self.cut();
+        }
+    }
+
+    /// Won't connect to destination `port` from now on (0: will again), and
+    /// cuts the connections open now, so an engine has to ask again.
+    pub fn refuse_port(&self, port: u16) {
+        self.refuse_port.store(port, Ordering::SeqCst);
+        self.cut();
+    }
+
+    fn cut(&self) {
+        if let Ok(mut o) = self.open.lock() {
+            for s in o.drain(..) {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    pub fn refused(&self) -> usize {
+        self.refused.lock().map(|r| *r).unwrap_or_default()
     }
 
     pub fn onward(&self) -> Vec<Onward> {
@@ -127,7 +198,19 @@ fn split_host_port(s: &str, default: u16) -> (String, u16) {
     }
 }
 
-fn http(client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()> {
+fn refuse(no: &Mutex<usize>) {
+    if let Ok(mut n) = no.lock() {
+        *n += 1;
+    }
+}
+
+fn http(
+    client: TcpStream,
+    log: &Mutex<Vec<Onward>>,
+    no: &Mutex<usize>,
+    creds: &Creds,
+    refused_port: u16,
+) -> std::io::Result<()> {
     client.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(client.try_clone()?);
     let mut line = String::new();
@@ -144,8 +227,31 @@ fn http(client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()> {
         headers.push(h);
     }
     let mut client_w = client.try_clone()?;
+    if let Some((user, pass)) = creds {
+        use base64::Engine;
+        let want = format!(
+            "basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        );
+        let given = headers.iter().any(|h| {
+            h.split_once(':').is_some_and(|(k, v)| {
+                k.trim().eq_ignore_ascii_case("proxy-authorization")
+                    && v.trim().eq_ignore_ascii_case(&want)
+                    && v.trim()[6..] == want[6..]
+            })
+        });
+        if !given {
+            refuse(no);
+            client_w.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+            return Ok(());
+        }
+    }
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_host_port(&target, 443);
+        if refused_port != 0 && port == refused_port {
+            client_w.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")?;
+            return Ok(());
+        }
         let up = match connect(&host, port) {
             Ok(u) => u,
             Err(_) => {
@@ -172,6 +278,10 @@ fn http(client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()> {
         None => (rest, "/"),
     };
     let (host, port) = split_host_port(authority, 80);
+    if refused_port != 0 && port == refused_port {
+        client_w.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")?;
+        return Ok(());
+    }
     let mut up = match connect(&host, port) {
         Ok(u) => u,
         Err(_) => {
@@ -199,7 +309,13 @@ fn http(client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn socks5(mut client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()> {
+fn socks5(
+    mut client: TcpStream,
+    log: &Mutex<Vec<Onward>>,
+    no: &Mutex<usize>,
+    creds: &Creds,
+    refused_port: u16,
+) -> std::io::Result<()> {
     client.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut b = [0u8; 2];
     client.read_exact(&mut b)?;
@@ -208,11 +324,31 @@ fn socks5(mut client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()
     }
     let mut methods = vec![0u8; b[1] as usize];
     client.read_exact(&mut methods)?;
-    if !methods.contains(&0) {
-        client.write_all(&[5, 0xff])?;
-        return Ok(());
+    match creds {
+        None if methods.contains(&0) => client.write_all(&[5, 0])?,
+        Some((user, pass)) if methods.contains(&2) => {
+            client.write_all(&[5, 2])?;
+            let mut v = [0u8; 2];
+            client.read_exact(&mut v)?;
+            let mut u = vec![0u8; v[1] as usize];
+            client.read_exact(&mut u)?;
+            let mut pl = [0u8; 1];
+            client.read_exact(&mut pl)?;
+            let mut p = vec![0u8; pl[0] as usize];
+            client.read_exact(&mut p)?;
+            if v[0] != 1 || u != user.as_bytes() || p != pass.as_bytes() {
+                refuse(no);
+                client.write_all(&[1, 1])?;
+                return Ok(());
+            }
+            client.write_all(&[1, 0])?;
+        }
+        _ => {
+            refuse(no);
+            client.write_all(&[5, 0xff])?;
+            return Ok(());
+        }
     }
-    client.write_all(&[5, 0])?;
     let mut req = [0u8; 4];
     client.read_exact(&mut req)?;
     if req[1] != 1 {
@@ -242,6 +378,10 @@ fn socks5(mut client: TcpStream, log: &Mutex<Vec<Onward>>) -> std::io::Result<()
     let mut p = [0u8; 2];
     client.read_exact(&mut p)?;
     let port = u16::from_be_bytes(p);
+    if refused_port != 0 && port == refused_port {
+        client.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0])?;
+        return Ok(());
+    }
     let up = match connect(&host, port) {
         Ok(u) => u,
         Err(_) => {
