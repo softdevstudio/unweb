@@ -1,0 +1,21 @@
+Unweb v0.4.0, published by Release run 41809909649 from 3ac79d6 (publish rerun after a GitHub 502 on release create; nothing had been created).
+Checked 2026-11-04T10:07Z from a cloud session:
+
+Assets at the tag (REST asset download):
+Unweb-linux-x86_64.AppImage: OK
+Unweb-macos-arm64.dmg: OK
+Unweb-macos-x86_64.dmg: OK
+Unweb-windows-x86_64.msi: OK
+unweb-linux-x86_64.deb: OK
+
+Assets at releases/latest/download:
+Unweb-linux-x86_64.AppImage: OK
+Unweb-macos-arm64.dmg: OK
+Unweb-macos-x86_64.dmg: OK
+Unweb-windows-x86_64.msi: OK
+unweb-linux-x86_64.deb: OK
+
+The downloaded Linux AppImage ran the end-to-end self-test under Xvfb (WebKitGTK 2.52.6):
+selftest passed with 1 check(s) not run in 192.8s on linux (Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15)
+
+Every build job also self-tested its installed package before publishing (deb, AppImage, both dmg, msi): all succeeded.
