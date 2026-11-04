@@ -2413,6 +2413,8 @@ fn location_checks(
     out.push(sign_in_check(app, strangers, site, &far, &aim));
     step("locations, a proxy that stops");
     out.push(stops_check(app, strangers, site, &aim));
+    step("locations, a proxy that hangs");
+    out.push(hung_check(app, strangers, site, &aim));
     step("locations, a site the proxy can't reach");
     out.push(refused_site_check(app, strangers, site, &aim));
 
@@ -2620,6 +2622,51 @@ fn stops_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str
             } else {
                 "(no relay here: the engine itself refuses to go direct) ".into()
             }
+        ),
+    )
+}
+
+/// A proxy that takes connections and never answers: the stranger is
+/// blocked within seconds, and nothing reaches the site for longer than an
+/// engine's own timeouts (90 s on macOS, where a timed-out proxy could be
+/// a reason to go direct).
+fn hung_check(app: &AppHandle, strangers: &Strangers, site: &Server, base: &str) -> Check {
+    use crate::strangers::Settings;
+    use crate::testproxy::Proxy;
+    let name = "a proxy that takes connections and never answers: nothing goes direct";
+    let Ok(proxy) = Proxy::socks5_sign_in("dy", "pw") else {
+        return check(name, false, "the test proxy didn't start".into());
+    };
+    proxy.set_hang(true);
+    let settings = Settings {
+        lang: String::new(),
+        location: crate::location::parse_location(&format!(
+            "socks5://dy:pw@127.0.0.1:{}",
+            proxy.port
+        ))
+        .ok()
+        .flatten(),
+    };
+    let Ok(first) = Url::parse(&format!("{base}/proxied?who=HG")) else {
+        return check(name, false, "no address".into());
+    };
+    let started = Instant::now();
+    let Ok((win, labels)) = strangers.open_window(app, vec![(Some(first), settings)]) else {
+        return check(name, false, "the window didn't open".into());
+    };
+    let blocked = wait_until(Instant::now() + Duration::from_secs(20), || {
+        strangers.blocked(&labels[0]) == Some(crate::relay::NOT_ANSWERING)
+    });
+    let blocked_after = started.elapsed().as_secs_f64();
+    let watch = if cfg!(target_os = "macos") { 90 } else { 20 };
+    std::thread::sleep(Duration::from_secs(watch).saturating_sub(started.elapsed()));
+    let leaked = proxied_hits(site, "HG").len();
+    close(app, strangers, &win);
+    check(
+        name,
+        blocked && leaked == 0,
+        format!(
+            "the stranger was blocked: {blocked} (after {blocked_after:.1} s); requests that reached the site in {watch} s: {leaked}"
         ),
     )
 }

@@ -28,12 +28,16 @@ use std::time::Duration;
 use base64::Engine;
 use tauri::Url;
 
-/// How long reaching the proxy and signing in may take.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long reaching the proxy may take, and its own answers (the SOCKS5
+/// greeting and sign-in): past this it counts as not answering.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const PROXY_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long an answer about a site may take (the proxy has to reach it
+/// first); also how long the engine has to say what it wants.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Connections held while the proxy is down. Past this, new ones wait
-/// unaccepted (an engine sees a slow proxy, never a failed one).
-pub const MAX_HELD: usize = 64;
+/// Connections served at once, held ones included. Past this, new ones
+/// wait unaccepted (an engine sees a slow proxy, never a failed one).
+pub const MAX_LIVE: usize = 256;
 
 /// Why a relay blocked its stranger.
 pub const NOT_ANSWERING: &str = "Proxy not answering: nothing loads until it does";
@@ -70,6 +74,7 @@ struct Inner {
     stopping: AtomicBool,
     held: Mutex<HashMap<u64, TcpStream>>,
     held_count: AtomicUsize,
+    live: AtomicUsize,
     next_id: AtomicU64,
     on_block: OnBlock,
     /// What the relay did, most recent last (for the self-test's details).
@@ -116,6 +121,7 @@ impl Relay {
             stopping: AtomicBool::new(false),
             held: Mutex::new(HashMap::new()),
             held_count: AtomicUsize::new(0),
+            live: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             on_block,
             events: Mutex::new(Vec::new()),
@@ -158,13 +164,20 @@ impl Relay {
     /// stranger would. When the proxy answers and takes the sign-in (whether
     /// or not it can reach that site), the stranger is no longer blocked.
     pub fn check(&self, url: &Url) -> Result<(), &'static str> {
+        // The address being opened; for Unweb's own pages (or a name too
+        // long for SOCKS5) a fixed public one, so the proxy learns nothing.
+        let web = matches!(url.scheme(), "http" | "https");
         let dest = match url.host() {
-            Some(url::Host::Domain(d)) => Dest::Name(d.to_string()),
-            Some(url::Host::Ipv4(a)) => Dest::V4(a.octets()),
-            Some(url::Host::Ipv6(a)) => Dest::V6(a.octets()),
-            None => Dest::Name("localhost".into()),
+            Some(url::Host::Domain(d)) if web && d.len() <= 255 => Dest::Name(d.to_string()),
+            Some(url::Host::Ipv4(a)) if web => Dest::V4(a.octets()),
+            Some(url::Host::Ipv6(a)) if web => Dest::V6(a.octets()),
+            _ => Dest::Name("example.com".into()),
         };
-        let port = url.port_or_known_default().unwrap_or(80);
+        let port = if web {
+            url.port_or_known_default().unwrap_or(80)
+        } else {
+            443
+        };
         let r = match open(&self.inner.up, &dest, port) {
             Outcome::Open(s, _) => {
                 let _ = s.shutdown(Shutdown::Both);
@@ -213,7 +226,11 @@ fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
         if inner.stopping.load(Ordering::SeqCst) {
             break;
         }
-        let Ok(stream) = stream else { continue };
+        let Ok(stream) = stream else {
+            // Out of file handles, say: wait rather than spin.
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
         note(
             &inner,
             format!("accepted from {:?}", stream.peer_addr().ok()),
@@ -227,15 +244,20 @@ fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
             continue;
         }
         let i = inner.clone();
-        std::thread::spawn(move || {
+        inner.live.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new().spawn(move || {
             let _ = serve(stream, &i);
+            i.live.fetch_sub(1, Ordering::SeqCst);
         });
-        // While the proxy is down, connections are held; past the cap,
-        // leave new ones waiting in the queue.
-        while inner.held_count.load(Ordering::SeqCst) >= MAX_HELD
+        if spawned.is_err() {
+            // The stream went with the closure; nothing was answered.
+            inner.live.fetch_sub(1, Ordering::SeqCst);
+        }
+        // Past the cap, leave new connections waiting in the queue.
+        while inner.live.load(Ordering::SeqCst) >= MAX_LIVE
             && !inner.stopping.load(Ordering::SeqCst)
         {
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
@@ -276,6 +298,17 @@ fn reply(code: u8) -> [u8; 10] {
     r
 }
 
+/// Turns down a request the engine shouldn't send. Never with a failure on
+/// macOS, which would go direct: the connection is parked unanswered there.
+fn turn_down(mut engine: TcpStream, inner: &Inner, answer: &[u8]) -> std::io::Result<()> {
+    if NEVER_FAIL {
+        park(engine, inner);
+        Ok(())
+    } else {
+        engine.write_all(answer)
+    }
+}
+
 fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
     engine.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     let mut b = [0u8; 2];
@@ -287,8 +320,7 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
     engine.read_exact(&mut methods)?;
     if !methods.contains(&0) {
         note(inner, format!("refused methods {methods:?}"));
-        engine.write_all(&[5, 0xff])?;
-        return Ok(());
+        return turn_down(engine, inner, &[5, 0xff]);
     }
     engine.write_all(&[5, 0])?;
     let mut req = [0u8; 4];
@@ -296,8 +328,7 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
     if req[0] != 5 || req[1] != 1 {
         note(inner, format!("refused request {req:?}"));
         // Only CONNECT.
-        engine.write_all(&reply(7))?;
-        return Ok(());
+        return turn_down(engine, inner, &reply(7));
     }
     let dest = match req[3] {
         1 => {
@@ -319,28 +350,37 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
                 Ok(n) if !n.is_empty() && !n.bytes().any(|c| c.is_ascii_control() || c == b' ') => {
                     Dest::Name(n)
                 }
-                _ => {
-                    engine.write_all(&reply(4))?;
-                    return Ok(());
-                }
+                _ => return turn_down(engine, inner, &reply(4)),
             }
         }
-        _ => {
-            engine.write_all(&reply(8))?;
-            return Ok(());
-        }
+        _ => return turn_down(engine, inner, &reply(8)),
     };
     let mut p = [0u8; 2];
     engine.read_exact(&mut p)?;
     let port = u16::from_be_bytes(p);
 
-    let blocked = inner.blocked.lock().map(|b| b.is_some()).unwrap_or(true);
-    if blocked || inner.stopping.load(Ordering::SeqCst) {
-        note(inner, format!("{dest:?}:{port} held (blocked)"));
-        hold(engine, inner);
-        return Ok(());
-    }
-    let outcome = open(&inner.up, &dest, port);
+    // While the stranger is blocked the connection is held, unanswered;
+    // once the proxy answers again (Relay::check) it goes on from here.
+    let outcome = loop {
+        let blocked = inner.blocked.lock().map(|b| b.is_some()).unwrap_or(true);
+        if blocked {
+            note(inner, format!("{dest:?}:{port} held (blocked)"));
+            if !hold(&engine, inner) {
+                return Ok(());
+            }
+            continue;
+        }
+        if inner.stopping.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        match open(&inner.up, &dest, port) {
+            Outcome::Down(why) => {
+                note(inner, format!("{dest:?}:{port} down: {why}"));
+                block(inner, why);
+            }
+            o => break o,
+        }
+    };
     note(
         inner,
         format!(
@@ -368,10 +408,7 @@ fn serve(mut engine: TcpStream, inner: &Inner) -> std::io::Result<()> {
                 engine.write_all(&reply(code))?;
             }
         }
-        Outcome::Down(why) => {
-            block(inner, why);
-            hold(engine, inner);
-        }
+        Outcome::Down(_) => {}
     }
     Ok(())
 }
@@ -391,9 +428,21 @@ fn block(inner: &Inner, why: &'static str) {
     }
 }
 
-/// Keeps the engine's connection open, unanswered, until the engine gives
-/// up on it or the relay stops.
-fn hold(engine: TcpStream, inner: &Inner) {
+/// Keeps the engine's connection open, unanswered, while the stranger is
+/// blocked. True when the stranger is no longer blocked and the engine is
+/// still waiting; false when the engine gave up or the relay stopped.
+fn hold(engine: &TcpStream, inner: &Inner) -> bool {
+    wait_out(engine, inner, true)
+}
+
+/// Keeps a connection open, unanswered, until the engine gives up on it or
+/// the relay stops.
+fn park(engine: TcpStream, inner: &Inner) {
+    wait_out(&engine, inner, false);
+    let _ = engine.shutdown(Shutdown::Both);
+}
+
+fn wait_out(engine: &TcpStream, inner: &Inner, until_unblocked: bool) -> bool {
     let id = inner.next_id.fetch_add(1, Ordering::SeqCst);
     if let Ok(c) = engine.try_clone() {
         if let Ok(mut h) = inner.held.lock() {
@@ -406,9 +455,16 @@ fn hold(engine: TcpStream, inner: &Inner) {
     let _ = engine.set_read_timeout(Some(Duration::from_secs(1)));
     let mut e = engine;
     let mut buf = [0u8; 512];
+    let mut resume = false;
     while !inner.stopping.load(Ordering::SeqCst) {
+        if until_unblocked && inner.blocked.lock().map(|b| b.is_none()).unwrap_or(false) {
+            resume = true;
+            break;
+        }
         match e.read(&mut buf) {
             Ok(0) => break,
+            // It is waiting for an answer and has nothing more to say;
+            // anything it sends anyway is dropped.
             Ok(_) => {}
             Err(err)
                 if matches!(
@@ -418,11 +474,15 @@ fn hold(engine: TcpStream, inner: &Inner) {
             Err(_) => break,
         }
     }
-    let _ = e.shutdown(Shutdown::Both);
+    let _ = e.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     inner.held_count.fetch_sub(1, Ordering::SeqCst);
     if let Ok(mut h) = inner.held.lock() {
         h.remove(&id);
     }
+    if !resume {
+        let _ = e.shutdown(Shutdown::Both);
+    }
+    resume
 }
 
 fn connect_upstream(up: &Upstream) -> Result<TcpStream, &'static str> {
@@ -432,8 +492,8 @@ fn connect_upstream(up: &Upstream) -> Result<TcpStream, &'static str> {
         .collect();
     for a in addrs {
         if let Ok(s) = TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
-            let _ = s.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
-            let _ = s.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
+            let _ = s.set_read_timeout(Some(PROXY_TIMEOUT));
+            let _ = s.set_write_timeout(Some(PROXY_TIMEOUT));
             let _ = s.set_nodelay(true);
             return Ok(s);
         }
@@ -484,6 +544,8 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
         if let Err(why) = socks_sign_in(&mut s, up) {
             return Outcome::Down(why);
         }
+        // The answer about the site can take as long as reaching it.
+        let _ = s.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
         let mut req = vec![5u8, 1, 0];
         req.extend_from_slice(&dest.socks());
         req.extend_from_slice(&port.to_be_bytes());
@@ -527,12 +589,18 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
     if s.write_all(ask.as_bytes()).is_err() {
         return Outcome::Down(NOT_ANSWERING);
     }
+    let _ = s.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     let Ok(clone) = s.try_clone() else {
         return Outcome::Down(NOT_ANSWERING);
     };
     let mut reader = BufReader::new(clone);
     let mut status = String::new();
-    if reader.read_line(&mut status).unwrap_or(0) == 0 {
+    if (&mut reader)
+        .take(8 * 1024)
+        .read_line(&mut status)
+        .unwrap_or(0)
+        == 0
+    {
         return Outcome::Down(NOT_ANSWERING);
     }
     let code: u16 = status
@@ -547,7 +615,7 @@ fn open(up: &Upstream, dest: &Dest, port: u16) -> Outcome {
     let mut seen = 0usize;
     loop {
         let mut h = String::new();
-        match reader.read_line(&mut h) {
+        match (&mut reader).take(16 * 1024).read_line(&mut h) {
             Ok(0) | Err(_) => return Outcome::Down(NOT_ANSWERING),
             Ok(n) => seen += n,
         }
@@ -790,6 +858,46 @@ mod tests {
     }
 
     #[test]
+    fn a_hung_proxy_blocks_within_seconds_and_held_connections_resume() {
+        let (port, _) = site();
+        let proxy = Proxy::socks5().unwrap();
+        let (r, rx) = relay(&format!("socks5://127.0.0.1:{}", proxy.port));
+        proxy.set_hang(true);
+        let t = std::time::Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", r.port())).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        c.write_all(&[5, 1, 0]).unwrap();
+        let mut b = [0u8; 2];
+        c.read_exact(&mut b).unwrap();
+        let mut req = vec![5, 1, 0, 1, 127, 0, 0, 1];
+        req.extend_from_slice(&port.to_be_bytes());
+        c.write_all(&req).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(15)), Ok(NOT_ANSWERING));
+        assert!(t.elapsed() < Duration::from_secs(12), "{:?}", t.elapsed());
+        // The proxy answers again: the held connection goes on, and opens.
+        proxy.set_hang(false);
+        assert!(r
+            .check(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap())
+            .is_ok());
+        let mut rep = [0u8; 10];
+        c.read_exact(&mut rep).unwrap();
+        assert_eq!(rep[1], 0);
+        assert!(get(c).ends_with("ok"));
+    }
+
+    #[test]
+    fn many_connections_wait_rather_than_fail() {
+        let (r, _) = relay(&format!("socks5://127.0.0.1:{}", closed_port()));
+        let mut held = Vec::new();
+        for _ in 0..(MAX_LIVE + 20) {
+            held.push(TcpStream::connect(("127.0.0.1", r.port())).unwrap());
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(r.inner.live.load(Ordering::SeqCst) <= MAX_LIVE);
+        drop(held);
+    }
+
+    #[test]
     fn only_connect_is_taken() {
         let proxy = Proxy::socks5().unwrap();
         let (r, _) = relay(&format!("socks5://127.0.0.1:{}", proxy.port));
@@ -801,8 +909,13 @@ mod tests {
         // UDP ASSOCIATE.
         c.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
         let mut rep = [0u8; 10];
-        c.read_exact(&mut rep).unwrap();
-        assert_eq!(rep[1], 7);
+        if NEVER_FAIL {
+            // Parked, never answered with a failure.
+            assert!(c.read_exact(&mut rep).is_err());
+        } else {
+            c.read_exact(&mut rep).unwrap();
+            assert_eq!(rep[1], 7);
+        }
         // An HTTP request, as a page's fetch would send.
         let mut h = TcpStream::connect(("127.0.0.1", r.port())).unwrap();
         h.set_read_timeout(Some(Duration::from_secs(3))).unwrap();

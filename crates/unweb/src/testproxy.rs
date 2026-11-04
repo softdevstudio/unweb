@@ -34,6 +34,8 @@ pub struct Proxy {
     /// Sign-ins refused (wrong or missing credentials).
     pub refused: Arc<Mutex<usize>>,
     down: Arc<AtomicBool>,
+    /// Playing a hung proxy: connections are taken and never answered.
+    hang: Arc<AtomicBool>,
     /// A destination port this proxy won't connect to (0 for none), as a
     /// proxy that can't reach a site would answer.
     refuse_port: Arc<std::sync::atomic::AtomicU16>,
@@ -66,6 +68,8 @@ impl Proxy {
         let onward = Arc::new(Mutex::new(Vec::new()));
         let refused = Arc::new(Mutex::new(0usize));
         let down = Arc::new(AtomicBool::new(false));
+        let hang = Arc::new(AtomicBool::new(false));
+        let hung = hang.clone();
         let refuse_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
         let open = Arc::new(Mutex::new(Vec::new()));
         let (log, no, dead) = (onward.clone(), refused.clone(), down.clone());
@@ -75,6 +79,14 @@ impl Proxy {
                 // Playing dead: the connection is taken and closed at once.
                 if dead.load(Ordering::SeqCst) {
                     drop(stream);
+                    continue;
+                }
+                if hung.load(Ordering::SeqCst) {
+                    // Kept open, never read or answered, for a minute.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(120));
+                        drop(stream);
+                    });
                     continue;
                 }
                 if let (Ok(c), Ok(mut o)) = (stream.try_clone(), conns.lock()) {
@@ -97,6 +109,7 @@ impl Proxy {
             onward,
             refused,
             down,
+            hang,
             refuse_port,
             open,
         })
@@ -107,6 +120,15 @@ impl Proxy {
     pub fn set_down(&self, down: bool) {
         self.down.store(down, Ordering::SeqCst);
         if down {
+            self.cut();
+        }
+    }
+
+    /// Plays a proxy that takes connections and never answers them (and cuts
+    /// those open now), or stops playing.
+    pub fn set_hang(&self, hang: bool) {
+        self.hang.store(hang, Ordering::SeqCst);
+        if hang {
             self.cut();
         }
     }
